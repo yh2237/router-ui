@@ -1,0 +1,15 @@
+- model: "RTX1210"
+  series: "yamaha-rtx"
+
+- model: "RTX1220"
+  series: "yamaha-rtx"
+
+- model: "IX2215"
+  series: "nec-ix"
+
+- model: "IX2205"
+  series: "nec-ix"
+  overrides:
+    commands:
+      show_status:
+        cmd: "show status detail"

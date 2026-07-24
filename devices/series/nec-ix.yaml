@@ -1,0 +1,22 @@
+vendor: "NEC"
+transport: telnet
+prompt_regex: '.*[#>]\s*$'
+commands:
+  show_system:
+    label: "System Info"
+    description: "システム情報を表示"
+    cmd: "show system"
+    parse: "yamaha_system"
+    category: "system"
+  show_status:
+    label: "Interface Status"
+    description: "インターフェース状態を取得"
+    cmd: "show status"
+    parse: "table"
+    category: "interface"
+  show_route:
+    label: "Routing Table"
+    description: "IP経路情報を取得"
+    cmd: "show ip route"
+    parse: "route_table"
+    category: "routing"

@@ -1,0 +1,46 @@
+vendor: "Yamaha"
+transport: ssh
+prompt_regex: '.*[#>]\s*$'
+commands:
+  show_system:
+    label: "System Info"
+    description: "システム情報を表示"
+    cmd: "show environment"
+    parse: "yamaha_system"
+    category: "system"
+  show_status_boot:
+    label: "Boot Info"
+    description: "起動情報を表示（代替システム情報）"
+    cmd: "show status boot 0"
+    parse: "yamaha_status"
+    category: "system"
+  show_status_lan1:
+    label: "LAN1 Status"
+    description: "LAN1 インターフェースの状態を取得"
+    cmd: "show status lan1"
+    parse: "yamaha_status"
+    category: "interface"
+  show_status_lan2:
+    label: "LAN2 Status"
+    description: "LAN2 インターフェースの状態を取得"
+    cmd: "show status lan2"
+    parse: "yamaha_status"
+    category: "interface"
+  show_status_lan3:
+    label: "LAN3 Status"
+    description: "LAN3 インターフェースの状態を取得"
+    cmd: "show status lan3"
+    parse: "yamaha_status"
+    category: "interface"
+  show_status_lan4:
+    label: "LAN4 Status"
+    description: "LAN4 インターフェースの状態を取得"
+    cmd: "show status lan4"
+    parse: "yamaha_status"
+    category: "interface"
+  show_route:
+    label: "Routing Table"
+    description: "IP経路情報を取得"
+    cmd: "show ip route"
+    parse: "yamaha_route"
+    category: "routing"
