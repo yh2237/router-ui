@@ -1,0 +1,79 @@
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app
+ * contrast: pass (40–41) · honest: pass (46) · chrome: pass (47) · tokens: pass (48)
+ * responsive: pass (34, 49, 50–57) · icons: pass (30)
+ */
+:root {
+  --color-paper: oklch(97% 0.006 255);
+  --color-paper-2: oklch(93% 0.009 255);
+  --color-paper-3: oklch(89% 0.012 255);
+  --color-surface: oklch(100% 0.004 255);
+  --color-ink: oklch(21% 0.018 258);
+  --color-ink-2: oklch(34% 0.016 258);
+  --color-muted: oklch(49% 0.012 258);
+  --color-rule: oklch(76% 0.010 258);
+  --color-rule-strong: oklch(59% 0.012 258);
+  --color-accent: oklch(48% 0.17 258);
+  --color-accent-hover: oklch(54% 0.18 258);
+  --color-accent-active: oklch(42% 0.16 258);
+  --color-accent-tint: oklch(94% 0.030 258);
+  --color-accent-ink: oklch(99% 0.003 255);
+  --color-focus: oklch(52% 0.20 258);
+  --color-graphite: oklch(26% 0.014 258);
+  --color-graphite-2: oklch(34% 0.012 258);
+  --color-terminal: oklch(26% 0.075 255);
+  --color-terminal-deep: oklch(22% 0.065 255);
+  --color-terminal-rule: oklch(42% 0.060 255);
+  --color-terminal-text: oklch(95% 0.018 255);
+  --color-terminal-prompt: oklch(76% 0.13 242);
+  --color-panel-chassis: oklch(81% 0.009 255);
+  --color-panel-face-yamaha: oklch(39% 0.105 263);
+  --color-panel-face-nec: oklch(91% 0.012 255);
+  --color-panel-face-neutral: oklch(42% 0.012 258);
+  --color-panel-ink-light: oklch(97% 0.008 255);
+  --color-panel-ink-dark: oklch(24% 0.018 258);
+  --color-panel-socket: oklch(18% 0.010 258);
+  --color-panel-shell: oklch(65% 0.010 258);
+  --color-panel-inactive: oklch(58% 0.010 258);
+  --color-success: oklch(48% 0.12 155);
+  --color-success-bright: oklch(76% 0.19 140);
+  --color-success-tint: oklch(94% 0.035 155);
+  --color-warning: oklch(70% 0.14 85);
+  --color-warning-tint: oklch(96% 0.045 85);
+  --color-danger: oklch(50% 0.20 28);
+  --color-danger-hover: oklch(44% 0.19 28);
+  --color-danger-tint: oklch(95% 0.035 28);
+  --font-display: "IBM Plex Sans JP", "Hiragino Sans", sans-serif;
+  --font-body: "IBM Plex Sans JP", "Hiragino Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+  --line-tight: 1.25;
+  --line-body: 1.5;
+  --radius-control: 0.375rem;
+  --radius-panel: 0.5rem;
+  --radius-pill: 999px;
+  --rule-fine: 1px;
+  --shadow-panel: 0 1px 2px oklch(21% 0.018 258 / 0.06);
+  --shadow-menu: 0 0.75rem 2rem oklch(21% 0.018 258 / 0.14);
+  --shadow-panel-inset: inset 0 0 0 1px oklch(99% 0.003 255 / 0.18);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms;
+  --dur-fast: 150ms;
+  --dur-base: 220ms;
+}

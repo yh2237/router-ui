@@ -42,7 +42,7 @@ terminal.get("/api/device/:connId/terminal", (c) => {
     <div class="terminal-container">
         <div id="terminal-output" class="terminal-output-area"></div>
         <div class="terminal-input-line">
-            <span class="terminal-prefix" style="display:flex;align-items:center;gap:4px">
+            <span class="terminal-prefix">
                 <span class="status-dot up"></span>
                 <span>></span>
             </span>
@@ -54,15 +54,8 @@ terminal.get("/api/device/:connId/terminal", (c) => {
             var connId = "${connId}";
             var output = document.getElementById('terminal-output');
             var input = document.getElementById('terminal-input');
-            var ws = null;
-            var scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            function connect(){
-                ws = new WebSocket(scheme + '//' + location.host + '/ws/terminal/' + connId);
-                ws.onopen = function(){ appendLine('[接続しました]', 'system'); input.disabled = false; input.focus(); };
-                ws.onmessage = function(e){ appendLine(e.data, 'output'); };
-                ws.onclose = function(){ appendLine('[切断しました]', 'system'); input.disabled = true; setTimeout(connect, 3000); };
-                ws.onerror = function(){ ws.close(); };
-            }
+            var history = [];
+            var historyIndex = -1;
             function appendLine(text, cls){
                 var div = document.createElement('div');
                 div.className = 'terminal-line ' + cls;
@@ -71,16 +64,57 @@ terminal.get("/api/device/:connId/terminal", (c) => {
                 output.scrollTop = output.scrollHeight;
             }
             input.addEventListener('keydown', function(e){
-                if(e.key === 'Enter' && input.value.trim() && ws && ws.readyState === WebSocket.OPEN){
-                    ws.send(input.value);
-                    appendLine('> ' + input.value, 'prompt');
+                if(e.key === 'Enter' && input.value.trim() && !input.disabled){
+                    var command = input.value;
+                    history.push(command);
+                    historyIndex = history.length;
+                    appendLine('> ' + command, 'prompt');
                     input.value = '';
+                    input.disabled = true;
+                    appendLine('[実行中…]', 'system');
+                    fetch('/api/device/' + connId + '/terminal/execute', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ cmd: command })
+                    }).then(function(response){ return response.text(); }).then(function(text){
+                        output.lastChild && output.lastChild.remove();
+                        appendLine(text, 'output');
+                    }).catch(function(error){
+                        output.lastChild && output.lastChild.remove();
+                        appendLine('Error: ' + error.message, 'system');
+                    }).finally(function(){ input.disabled = false; input.focus(); });
+                } else if (e.key === 'ArrowUp' && history.length) {
+                    e.preventDefault();
+                    historyIndex = Math.max(0, historyIndex - 1);
+                    input.value = history[historyIndex];
+                } else if (e.key === 'ArrowDown' && history.length) {
+                    e.preventDefault();
+                    historyIndex = Math.min(history.length, historyIndex + 1);
+                    input.value = historyIndex === history.length ? '' : history[historyIndex];
                 }
             });
-            connect();
+            window.routerUiTerminalCleanup = function(){
+                window.routerUiTerminalCleanup = null;
+            };
+            appendLine('[接続済み]', 'system');
+            input.disabled = false;
+            input.focus();
         })();
     </script>
     `);
+});
+
+terminal.post("/api/device/:connId/terminal/execute", async (c) => {
+    const connId = c.req.param("connId");
+    if (!getConnection(connId)) return c.text("Error: Device not connected", 404);
+    const body = await c.req.parseBody();
+    const cmd = (body.cmd as string | undefined)?.trim();
+    if (!cmd) return c.text("Error: Command is required", 400);
+    try {
+        return c.text(await executeCommand(connId, cmd));
+    } catch (err) {
+        return c.text(`Error: ${(err as Error).message}`, 500);
+    }
 });
 
 export default terminal;

@@ -1,4 +1,9 @@
 node_modules/
 package-lock.json
+dist/
+
 docs/plan/
+docs/img/
 docs/Yamaha_reference/
+
+.hallmark/

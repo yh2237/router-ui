@@ -3,10 +3,13 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { deepMerge } from "./merge.js";
-import type { SeriesConfig, ModelEntry, ResolvedConfig, TransportType } from "./types.js";
+import type { DevicePanelConfig, SeriesConfig, ModelEntry, ResolvedConfig, TransportType } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEVICES_DIR = resolve(__dirname, "../../devices");
+const compiledDevicesDir = resolve(__dirname, "../../devices");
+const sourceDevicesDir = resolve(__dirname, "../../../devices");
+const DEVICES_DIR = existsSync(compiledDevicesDir) ? compiledDevicesDir : sourceDevicesDir;
+const PANELS_DIR = resolve(DEVICES_DIR, "panels");
 
 function loadYaml<T>(filePath: string): T {
     const raw = readFileSync(filePath, "utf-8");
@@ -36,7 +39,16 @@ export function resolveConfig(model: string): ResolvedConfig {
     const config = entry.overrides
         ? deepMerge(series as unknown as Record<string, unknown>, entry.overrides as unknown as Record<string, unknown>)
         : { ...series };
-    return { ...config, model } as unknown as ResolvedConfig;
+    const panel = entry.panel ? loadPanel(entry.panel) : undefined;
+    return { ...config, model, panel } as unknown as ResolvedConfig;
+}
+
+export function loadPanel(name: string): DevicePanelConfig {
+    const path = resolve(PANELS_DIR, `${name}.yaml`);
+    if (!existsSync(path)) {
+        throw new Error(`Panel config not found: ${name}`);
+    }
+    return loadYaml<DevicePanelConfig>(path);
 }
 
 export function listModels(): { model: string; series: string; vendor: string; transport: TransportType }[] {

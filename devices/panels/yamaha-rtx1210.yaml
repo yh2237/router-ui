@@ -1,0 +1,90 @@
+model: "RTX1210"
+width: 760
+height: 280
+theme: "yamaha"
+brand: "YAMAHA"
+
+# すべての要素は独立した座標を持つ。
+# LEDを下部一列、左側縦一列、ポート間など任意の位置に配置できる。
+elements:
+  - type: "label"
+    id: "brand"
+    text: "YAMAHA"
+    x: 28
+    y: 30
+    size: "md"
+
+  - type: "label"
+    id: "model"
+    text: "RTX1210"
+    x: 730
+    y: 30
+    size: "lg"
+    align: "end"
+
+  - type: "port"
+    id: "console"
+    label: "CONSOLE"
+    portType: "console"
+    x: 38
+    y: 72
+    width: 70
+    height: 62
+    statusSource: "system.console"
+
+  - type: "port-group"
+    id: "lan1"
+    label: "LAN1"
+    x: 160
+    y: 58
+    columns: 4
+    portWidth: 58
+    portHeight: 48
+    gapX: 8
+    gapY: 8
+    ports:
+      - { id: "lan1.1", label: "1", statusSource: "interface.lan1.port.1" }
+      - { id: "lan1.2", label: "2", statusSource: "interface.lan1.port.2" }
+      - { id: "lan1.3", label: "3", statusSource: "interface.lan1.port.3" }
+      - { id: "lan1.4", label: "4", statusSource: "interface.lan1.port.4" }
+      - { id: "lan1.5", label: "5", statusSource: "interface.lan1.port.5" }
+      - { id: "lan1.6", label: "6", statusSource: "interface.lan1.port.6" }
+      - { id: "lan1.7", label: "7", statusSource: "interface.lan1.port.7" }
+      - { id: "lan1.8", label: "8", statusSource: "interface.lan1.port.8" }
+
+  - type: "port"
+    id: "lan2"
+    label: "LAN2"
+    portType: "rj45"
+    x: 460
+    y: 58
+    width: 62
+    height: 72
+    statusSource: "interface.lan2"
+
+  - type: "port"
+    id: "lan3"
+    label: "LAN3"
+    portType: "rj45"
+    x: 460
+    y: 138
+    width: 62
+    height: 72
+    statusSource: "interface.lan3"
+
+  - type: "port"
+    id: "bri1"
+    label: "ISDN S/T"
+    portType: "rj45"
+    x: 590
+    y: 118
+    width: 76
+    height: 72
+    statusSource: "interface.bri1"
+
+  - { type: "led", id: "power", label: "POWER", x: 64, y: 238, statusSource: "system.power", align: "top" }
+  - { type: "led", id: "alarm", label: "ALARM", x: 172, y: 238, statusSource: "system.alarm", align: "top" }
+  - { type: "led", id: "status", label: "STATUS", x: 280, y: 238, statusSource: "system.status", align: "top" }
+  - { type: "led", id: "microsd", label: "microSD", x: 394, y: 238, statusSource: "storage.microsd", align: "top" }
+  - { type: "led", id: "usb", label: "USB", x: 500, y: 238, statusSource: "storage.usb", align: "top" }
+  - { type: "led", id: "download", label: "DOWNLOAD", x: 620, y: 238, statusSource: "system.download", align: "top" }

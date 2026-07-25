@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
   <script>
@@ -48,11 +48,13 @@
       function closeDropdown() {
         dropdown.classList.remove('open');
         trigger.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
       }
 
       function openDropdown() {
         dropdown.classList.add('open');
         trigger.classList.add('open');
+        trigger.setAttribute('aria-expanded', 'true');
         search.value = '';
         search.focus();
         filterOptions('');
@@ -89,6 +91,10 @@
           trigger.click();
         }
         if (e.key === 'Escape') closeDropdown();
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          openDropdown();
+        }
       });
 
       window.setModel = function(modelName, setDefaults) {
@@ -166,10 +172,11 @@
             <textarea id="private-key" name="private_key" class="form-input" rows="5"
               placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
           </div>
-          <div class="section-label">機種</div>
           <div class="form-field">
+            <span class="field-label">機種</span>
             <div class="model-select" id="model-select">
-              <div class="model-select-trigger" id="model-trigger" tabindex="0" role="combobox">
+              <div class="model-select-trigger" id="model-trigger" tabindex="0" role="combobox"
+                aria-haspopup="listbox" aria-controls="model-options" aria-expanded="false">
                 <span class="model-select-placeholder" id="model-placeholder">機種を選択...</span>
                 <span class="model-select-value" id="model-display"></span>
                 <span class="model-select-arrow">&#x25BC;</span>
@@ -180,7 +187,7 @@
                   <input type="text" class="model-search-input" id="model-search"
                     placeholder="検索..." autocomplete="off">
                 </div>
-                <div class="model-options" id="model-options">
+                <div class="model-options" id="model-options" role="listbox">
                   {{modelOptions}}
                 </div>
               </div>

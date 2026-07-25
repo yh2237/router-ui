@@ -1,5 +1,6 @@
 - model: "RTX1210"
   series: "yamaha-rtx"
+  panel: "yamaha-rtx1210"
 
 - model: "RTX1220"
   series: "yamaha-rtx"

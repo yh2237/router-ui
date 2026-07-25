@@ -16,7 +16,7 @@ commands.get("/api/device/:connId/settings", (c) => {
     const sidebar = cats
         .map(
             (cat, i) => `
-                <button class="category-item${i === 0 ? " active" : ""}" hx-get="/api/device/${connId}/settings/category/${cat.key}" hx-target="#settings-content">${cat.label}</button>
+                <button class="category-item${i === 0 ? " active" : ""}" hx-get="/api/device/${connId}/settings/category/${cat.key}" hx-target="#settings-content" onclick="this.closest('.settings-sidebar').querySelectorAll('.category-item').forEach(function(item){item.classList.remove('active')});this.classList.add('active')">${cat.label}</button>
             `,
         )
         .join("");
@@ -55,7 +55,7 @@ commands.get("/api/device/:connId/settings/category/:catKey", (c) => {
                     </div>
                     <button class="btn-execute" hx-post="/api/device/${connId}/commands/${key}/execute" hx-target="#cmd-output-${key}" hx-indicator="#cmd-spin-${key}">実行</button>
                     <span id="cmd-spin-${key}" class="spinner htmx-indicator"></span>
-                    <div id="cmd-output-${key}" class="command-output" style="width:100%"></div>
+                    <div id="cmd-output-${key}" class="command-output"></div>
                 </div>
                 `,
         )
@@ -79,7 +79,7 @@ commands.post("/api/device/:connId/commands/:cmdKey/execute", async (c) => {
         return c.html(renderResult(raw, parsed));
     } catch (err) {
         return c.html(
-            `<div class="error-message">コマンド失敗しました<br><span style="font-size:var(--font-size-xs);opacity:0.7">(機器からの応答: ${escapeHtml((err as Error).message)})</span></div>`,
+            `<div class="error-message">コマンドの実行に失敗しました<span class="error-detail">機器からの応答: ${escapeHtml((err as Error).message)}</span></div>`,
             500,
         );
     }
@@ -94,6 +94,13 @@ function collectCategories(
         system: "システム",
         resource: "リソース",
         traffic: "トラフィック",
+        network: "ARP・近隣情報",
+        dhcp_dns: "DHCP・DNS",
+        sessions: "セッション・NAT",
+        wan_vpn: "WAN・VPN",
+        logs: "ログ",
+        security: "管理・セキュリティ",
+        configuration: "設定確認",
         other: "その他",
     };
     const seen = new Set<string>();

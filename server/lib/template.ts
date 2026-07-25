@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEMPLATES_DIR = resolve(__dirname, "../../web/templates");
+const compiledTemplatesDir = resolve(__dirname, "../../web/templates");
+const sourceTemplatesDir = resolve(__dirname, "../../../web/templates");
+const TEMPLATES_DIR = existsSync(compiledTemplatesDir) ? compiledTemplatesDir : sourceTemplatesDir;
 
 const cache = new Map<string, string>();
 

@@ -35,9 +35,9 @@ devices.get("/api/saved-connections", (c) => {
             (s, i) => `
                 <div class="saved-item">
                     <span class="saved-info">${escAttr(s.label)}<span class="saved-host">${escAttr(s.host)}:${s.port}</span></span>
-                    <div style="display:flex;gap:4px">
+                    <div class="saved-actions">
                         <button class="btn-use" type="button" onclick="document.getElementById('host').value='${escJs(s.host)}';document.getElementById('port').value='${s.port}';document.getElementById('username').value='${escJs(s.username)}';window.setModel('${escJs(s.model)}', false)">使う</button>
-                        <button class="btn-use" type="button" style="color:var(--status-down)" hx-delete="/api/saved-connections/${i}" hx-target="closest .saved-item" hx-swap="outerHTML">削除</button>
+                        <button class="btn-use btn-use--danger" type="button" hx-delete="/api/saved-connections/${i}" hx-target="closest .saved-item" hx-swap="outerHTML">削除</button>
                     </div>
                 </div>
             `,

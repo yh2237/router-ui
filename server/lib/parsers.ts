@@ -8,6 +8,8 @@ export interface ParsedResult {
 
 export function parseOutput(raw: string, parserName?: string): ParsedResult {
     switch (parserName) {
+        case "raw":
+            return { type: "raw", raw };
         case "table":
             return parseTable(raw);
         case "route_table":

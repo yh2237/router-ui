@@ -1,17 +1,26 @@
 import { Hono } from "hono";
 import { executeCommand, getConnection } from "../lib/connection.js";
 import { parseOutput, type ParsedResult } from "../lib/parsers.js";
+import { renderDevicePanel, type PanelRuntimeState } from "../lib/device-panel.js";
 import type { ResolvedConfig } from "../lib/types.js";
 
 const dashboard = new Hono();
 
 const CARD_DEFS: { key: string; label: string }[] = [
     { key: "system", label: "システム情報" },
-    { key: "interface", label: "インターフェース情報" },
-    { key: "routing", label: "ルーティング情報" },
     { key: "resource", label: "リソース情報" },
     { key: "traffic", label: "トラフィック情報" },
+    { key: "interface", label: "インターフェース情報" },
+    { key: "routing", label: "ルーティング情報" },
 ];
+
+interface TrafficSample {
+    at: number;
+    transmittedOctets: number;
+    receivedOctets: number;
+}
+
+const trafficHistory = new Map<string, TrafficSample[]>();
 
 dashboard.get("/api/device/:connId/dashboard", async (c) => {
     const connId = c.req.param("connId");
@@ -20,15 +29,15 @@ dashboard.get("/api/device/:connId/dashboard", async (c) => {
 
     const cards = CARD_DEFS
         .map((def) => `
-            <div class="dashboard-card">
+            <div class="dashboard-card dashboard-card--${def.key}">
                 <div class="dashboard-card-header">
                     <h3>${def.label}</h3>
                     <span id="dash-spin-${def.key}" class="spinner htmx-indicator"></span>
-                    <button class="btn-refresh" hx-post="/api/device/${connId}/dashboard/card/${def.key}" hx-target="#dash-body-${def.key}" hx-indicator="#dash-spin-${def.key}">&#x21bb;</button>
+                    <button class="btn-refresh" aria-label="${def.label}を更新" hx-post="/api/device/${connId}/dashboard/card/${def.key}" hx-target="#dash-body-${def.key}" hx-indicator="#dash-spin-${def.key}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5.3M20 4v7h-7"/></svg></button>
                 </div>
                 <div class="dashboard-card-body" id="dash-body-${def.key}"
                     hx-post="/api/device/${connId}/dashboard/card/${def.key}"
-                    hx-trigger="load" hx-target="this" hx-indicator="#dash-spin-${def.key}">
+                    hx-trigger="${def.key === "traffic" ? "load, every 5s" : "load"}" hx-target="this" hx-indicator="#dash-spin-${def.key}">
                     <div class="dash-loading">読み込み中...</div>
                 </div>
             </div>
@@ -55,13 +64,13 @@ dashboard.post("/api/device/:connId/dashboard/card/:category", async (c) => {
             case "resource":
                 return await renderResourceCard(conn.config, connId);
             case "traffic":
-                return renderTrafficCard();
+                return await renderTrafficCard(conn.config, connId);
             default:
                 return c.html(`<div class="error-message">不明なカテゴリです</div>`);
         }
     } catch (err) {
         return c.html(
-            `<div class="error-message">取得に失敗しました<br><span style="font-size:var(--font-size-xs);opacity:0.7">(機器からの応答: ${escapeHtml((err as Error).message)})</span></div>`,
+            `<div class="error-message">取得に失敗しました<span class="error-detail">機器からの応答: ${escapeHtml((err as Error).message)}</span></div>`,
         );
     }
 });
@@ -111,9 +120,13 @@ async function renderInterfaceCard(config: ResolvedConfig, connId: string): Prom
     if (ifaceCmds.length === 0) return noDataHtml();
 
     const items: string[] = [];
+    const panelState: PanelRuntimeState = {
+        "system.power": { status: "up", detail: "接続中" },
+    };
     for (const [key] of ifaceCmds) {
         try {
             const parsed = await execAndCache(config, connId, key);
+            const sourceName = key.replace(/^show_status_?/, "").toLowerCase();
 
             if (parsed.type === "table" && parsed.rows && parsed.rows.length > 0) {
                 const nameCol = (parsed.columns ?? []).find(
@@ -125,32 +138,43 @@ async function renderInterfaceCard(config: ResolvedConfig, connId: string): Prom
                     const status = rawStatus.includes("up") ? "up" : rawStatus.includes("down") ? "down" : "unknown";
                     const ipAddr = row["IP Address"] || row["IPアドレス"] || "-";
                     const speed = row["Speed"] || row["速度"] || "-";
+                    panelState[`interface.${name.toLowerCase()}`] = {
+                        status,
+                        detail: [ipAddr, speed].filter((value) => value && value !== "-").join(" · "),
+                    };
                     items.push(ifaceRowHtml(name, status, ipAddr, speed));
                 }
             } else {
                 const ifaceName = key.replace(/^show_status_?/, "").toUpperCase() || "STATUS";
-                let status = "unknown";
+                let status: "up" | "down" | "warning" | "unknown" = "unknown";
                 let ipAddr = "-";
                 let speed = "-";
 
                 if (parsed.type === "keyvalue" && parsed.data) {
                     const d = parsed.data;
-                    const rawStatus = (pick(d, ["Status", "状態", "Link"]) || "").toLowerCase();
-                    if (rawStatus.includes("up")) status = "up";
-                    else if (rawStatus.includes("down")) status = "down";
+                    const rawStatus = pick(d, ["Status", "状態", "Link", "Link Status", "リンク状態", "リンク"]) || "";
+                    status = detectInterfaceStatus(rawStatus);
                     ipAddr = pick(d, ["IP Address", "IPアドレス", "ip address"]) || "-";
                     speed = pick(d, ["Speed", "速度"]) || "-";
                 }
 
+                if (status === "unknown") status = detectInterfaceStatus(parsed.raw);
+                panelState[`interface.${sourceName}`] = {
+                    status,
+                    detail: [ipAddr, speed].filter((value) => value && value !== "-").join(" · "),
+                };
+                Object.assign(panelState, parsePhysicalPortStates(sourceName, parsed.raw));
                 items.push(ifaceRowHtml(ifaceName, status, ipAddr, speed));
             }
         } catch {
             const name = key.replace(/^show_status_?/, "").toUpperCase() || "?";
+            panelState[`interface.${name.toLowerCase()}`] = { status: "error", detail: "取得失敗" };
             items.push(ifaceRowHtml(name, "unknown", "エラー", "-", true));
         }
     }
 
-    return cHtml(`<div class="dash-iface-list">${items.join("")}</div>`);
+    const panel = config.panel ? renderDevicePanel(config.panel, panelState) : "";
+    return cHtml(`${panel}<div class="dash-iface-list">${items.join("")}</div>`);
 }
 
 async function renderRoutingCard(config: ResolvedConfig, connId: string): Promise<Response> {
@@ -259,8 +283,71 @@ async function renderResourceCard(config: ResolvedConfig, connId: string): Promi
     return noDataHtml("リソース情報はこの機種では利用できません");
 }
 
-function renderTrafficCard(): Response {
-    return cHtml(`<div class="dash-empty-state">トラフィック情報は対応機種でのみ表示可能です</div>`);
+async function renderTrafficCard(config: ResolvedConfig, connId: string): Promise<Response> {
+    const command = config.commands.show_status_lan1;
+    if (!command) return noDataHtml("トラフィック情報はこの機種では利用できません");
+
+    const raw = await executeCommand(connId, command.cmd);
+    const counters = parseTrafficCounters(raw);
+    if (!counters) return noDataHtml("LAN1の送受信カウンタを取得できませんでした");
+
+    const samples = trafficHistory.get(connId) ?? [];
+    samples.push({ at: Date.now(), ...counters });
+    while (samples.length > 60) samples.shift();
+    trafficHistory.set(connId, samples);
+
+    const rates = samples.slice(1).map((sample, index) => {
+        const previous = samples[index];
+        const elapsedSeconds = (sample.at - previous.at) / 1000;
+        return {
+            at: sample.at,
+            tx: elapsedSeconds > 0 ? Math.max(0, (sample.transmittedOctets - previous.transmittedOctets) * 8 / elapsedSeconds) : 0,
+            rx: elapsedSeconds > 0 ? Math.max(0, (sample.receivedOctets - previous.receivedOctets) * 8 / elapsedSeconds) : 0,
+        };
+    });
+
+    if (rates.length === 0) {
+        return cHtml(`<div class="traffic-wait">最初のサンプルを取得しました。5秒後に転送量を表示します。</div>`);
+    }
+
+    const max = Math.max(1, ...rates.flatMap((rate) => [rate.tx, rate.rx]));
+    const makePoints = (key: "tx" | "rx") => rates.map((rate, index) => {
+        const x = rates.length === 1 ? 0 : (index / (rates.length - 1)) * 100;
+        const y = 100 - (rate[key] / max) * 100;
+        return `${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(" ");
+    const latest = rates[rates.length - 1];
+
+    return cHtml(`
+        <div class="traffic-summary">
+            <span><i class="traffic-key traffic-rx"></i>受信 <strong>${formatBitRate(latest.rx)}</strong></span>
+            <span><i class="traffic-key traffic-tx"></i>送信 <strong>${formatBitRate(latest.tx)}</strong></span>
+        </div>
+        <svg class="traffic-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="LAN1の送受信トラフィック履歴">
+            <path class="traffic-grid" d="M0 25H100M0 50H100M0 75H100" />
+            <polyline class="traffic-line traffic-line-rx" points="${makePoints("rx")}" />
+            <polyline class="traffic-line traffic-line-tx" points="${makePoints("tx")}" />
+        </svg>
+        <div class="traffic-scale">直近 ${rates.length * 5}秒 · 最大 ${formatBitRate(max)}</div>
+    `);
+}
+
+export function parseTrafficCounters(raw: string): { transmittedOctets: number; receivedOctets: number } | null {
+    const transmitted = raw.match(/^Transmitted:\s+\d+ packets \((\d+) octets\)/m);
+    const received = raw.match(/^Received:\s+\d+ packets \((\d+) octets\)/m);
+    if (!transmitted || !received) return null;
+    return { transmittedOctets: Number(transmitted[1]), receivedOctets: Number(received[1]) };
+}
+
+function formatBitRate(bitsPerSecond: number): string {
+    const units = ["bit/s", "kbit/s", "Mbit/s", "Gbit/s"];
+    let value = bitsPerSecond;
+    let index = 0;
+    while (value >= 1000 && index < units.length - 1) {
+        value /= 1000;
+        index++;
+    }
+    return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
 function noDataHtml(msg = "データがありません"): Response {
@@ -295,7 +382,7 @@ function cHtml(html: string, status = 200): Response {
 
 function ifaceRowHtml(name: string, status: string, ip: string, speed: string, isError = false): string {
     const ipSpan = isError
-        ? `<span class="iface-ip" style="color:var(--text-muted)">${escapeHtml(ip)}</span>`
+        ? `<span class="iface-ip iface-ip-muted">${escapeHtml(ip)}</span>`
         : `<span class="iface-ip">${escapeHtml(ip)}</span>`;
     return `
         <div class="iface-row">
@@ -304,6 +391,29 @@ function ifaceRowHtml(name: string, status: string, ip: string, speed: string, i
             <span class="iface-speed">${escapeHtml(speed)}</span>
         </div>
     `;
+}
+
+export function detectInterfaceStatus(value: string): "up" | "down" | "warning" | "unknown" {
+    const normalized = value.toLowerCase();
+    if (/(?:\bdown\b|link\s*down|リンクダウン|未接続|切断)/i.test(normalized)) return "down";
+    if (/(?:error|alarm|異常|障害)/i.test(normalized)) return "warning";
+    if (/(?:\bup\b|link\s*up|リンクアップ|接続中|(?:10|100|1000|2500|5000|10g)base|full.duplex|half.duplex|全二重|半二重)/i.test(normalized)) {
+        return "up";
+    }
+    return "unknown";
+}
+
+export function parsePhysicalPortStates(interfaceName: string, raw: string): PanelRuntimeState {
+    const result: PanelRuntimeState = {};
+    for (const line of raw.split(/\r?\n/)) {
+        const match = line.match(/(?:port|ポート)\s*([0-9]+)/i);
+        if (!match) continue;
+        result[`interface.${interfaceName}.port.${match[1]}`] = {
+            status: detectInterfaceStatus(line),
+            detail: line.trim(),
+        };
+    }
+    return result;
 }
 
 export default dashboard;

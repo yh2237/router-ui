@@ -5,6 +5,7 @@ import devices from "./routes/devices.js";
 import commands from "./routes/commands.js";
 import dashboard from "./routes/dashboard.js";
 import terminal, { initTerminalWs } from "./routes/terminal.js";
+import diagnostics from "./routes/diagnostics.js";
 import { renderTemplate } from "./lib/template.js";
 import { listModels } from "./lib/config.js";
 
@@ -14,11 +15,12 @@ app.route("/", devices);
 app.route("/", commands);
 app.route("/", dashboard);
 app.route("/", terminal);
+app.route("/", diagnostics);
 
 app.get("/", (c) => {
     const models = listModels();
     const opts = models
-        .map((m) => `<div class="model-option" data-value="${escapeHtml(m.model)}" data-transport="${m.transport}">${escapeHtml(m.vendor)} ${escapeHtml(m.model)}</div>`)
+        .map((m) => `<div class="model-option" role="option" tabindex="-1" data-value="${escapeHtml(m.model)}" data-transport="${m.transport}">${escapeHtml(m.vendor)} ${escapeHtml(m.model)}</div>`)
         .join("");
     return c.html(renderTemplate("index.html", { modelOptions: opts }));
 });

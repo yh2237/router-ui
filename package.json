@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch server/index.ts",
-    "start": "tsx server/index.ts",
+    "build": "tsc",
+    "start": "node dist/server/index.js",
+    "start:tsx": "tsx server/index.ts",
     "test": "tsx --test transports/**/*.test.ts server/**/*.test.ts",
     "probe:device": "tsx scripts/probe-device.ts"
   },
