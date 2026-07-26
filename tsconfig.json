@@ -12,5 +12,5 @@
     "rootDir": ".",
     "resolveJsonModule": true
   },
-  "include": ["server/**/*", "transports/**/*"]
+  "include": ["server/**/*", "transports/**/*", "scripts/**/*"]
 }

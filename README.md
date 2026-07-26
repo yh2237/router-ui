@@ -35,8 +35,19 @@ YAMAHA RTX と NEC IX のCLIを、SSH/Telnet経由でブラウザから操作す
   - 現在の設定、未保存の設定差分
 - 診断
   - 入力値を検証したPingとTraceroute
+- 設定変更
+  - 時刻、インターフェースIP、LAN動作モード、ルーティング
+  - NAT、DNS、DHCP
+  - ログ・SYSLOG、SNMP、UPnP
+  - IPv4フィルター、HTTP URLフィルター
+  - PPPoEプロバイダー接続、IPsecサイト間VPN
+  - SSH/SFTP経由の設定ファイル読込と自動ロールバック
+  - 生成コマンドの事前確認
+  - 適用前後の`show config`差分
+  - 適用と起動設定への保存を分離
+  - パスワードと事前共有鍵のプレビュー・差分マスキング
 
-設定を書き換える操作は、確認・差分・保存の安全なフローが未実装のため、専用UIからは実行しません。必要な場合はターミナルを使用してください。
+今後追加する設定カテゴリと安全な操作フローは[設定変更UI](docs/settings.md)を参照してください。
 
 ## インストール
 
@@ -103,6 +114,20 @@ save
 
 - [デバイス前面パネル定義](docs/device-panels/panel-schema.md)
 - [PNGパーツ制作ルール](docs/device-panels/asset-guidelines.md)
+- [Figmaパネルエクスポーター設計](docs/device-panels/figma-exporter.md)
+- [設定変更UIと実装予定](docs/settings.md)
+
+Figmaから前面パネルを更新する場合は、`tools/figma-panel-exporter/manifest.json`を
+Figma DesktopのDevelopment pluginとして読み込み、完成パネルFrameを書き出します。
+
+```bash
+npm run panel:import -- \
+  --bundle ./yamaha-rtx1210.router-panel.json \
+  --bindings devices/panel-bindings/yamaha-rtx1210.yaml \
+  --check
+```
+
+差分を確認した後、`--check`を`--write`へ変更するとPNG、部品カタログ、パネルYAMLを更新します。
 
 実機への反復プローブには次を使います。接続先にコマンドを繰り返し送るため、検証用の機器で使用してください。
 

@@ -16,6 +16,8 @@ test("RTX1210 uses documented Yamaha commands", () => {
     assert.equal(config.commands.show_config_difference.cmd, "show config difference");
     assert.equal(config.panel?.model, "RTX1210");
     assert.equal(config.panel?.theme, "yamaha");
-    assert.ok(config.panel?.elements.some((element) => element.type === "port-group" && element.id === "lan1"));
+    assert.equal(config.panel?.schemaVersion, 2);
+    assert.ok(config.panel?.partCatalog?.parts["yamaha.port.rj45-type-01"]);
+    assert.ok(config.panel?.elements.some((element) => element.type === "port" && element.id === "lan1.1"));
     assert.ok(config.panel?.elements.some((element) => element.type === "led" && element.id === "power"));
 });

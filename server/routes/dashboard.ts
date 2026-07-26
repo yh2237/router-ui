@@ -174,7 +174,7 @@ async function renderInterfaceCard(config: ResolvedConfig, connId: string): Prom
     }
 
     const panel = config.panel ? renderDevicePanel(config.panel, panelState) : "";
-    return cHtml(`${panel}<div class="dash-iface-list">${items.join("")}</div>`);
+    return cHtml(renderInterfaceOverview(panel, items));
 }
 
 async function renderRoutingCard(config: ResolvedConfig, connId: string): Promise<Response> {
@@ -380,17 +380,71 @@ function cHtml(html: string, status = 200): Response {
     });
 }
 
-function ifaceRowHtml(name: string, status: string, ip: string, speed: string, isError = false): string {
-    const ipSpan = isError
-        ? `<span class="iface-ip iface-ip-muted">${escapeHtml(ip)}</span>`
-        : `<span class="iface-ip">${escapeHtml(ip)}</span>`;
+export function renderInterfaceOverview(panel: string, items: string[]): string {
+    const panelRegion = panel
+        ? `
+            <section class="interface-panel-region" aria-labelledby="interface-panel-heading">
+                <div class="interface-section-head">
+                    <div>
+                        <h4 id="interface-panel-heading">前面パネル</h4>
+                        <p>物理ポートとランプの状態</p>
+                    </div>
+                </div>
+                <div class="interface-panel-canvas">${panel}</div>
+            </section>
+        `
+        : "";
+
     return `
-        <div class="iface-row">
-            <span class="iface-name"><span class="status-dot ${status}"></span> ${escapeHtml(name)}</span>
-            ${ipSpan}
-            <span class="iface-speed">${escapeHtml(speed)}</span>
+        <div class="interface-workbench${panel ? "" : " interface-workbench--list-only"}">
+            ${panelRegion}
+            <section class="interface-list-region" aria-labelledby="interface-list-heading">
+                <div class="interface-section-head">
+                    <div>
+                        <h4 id="interface-list-heading">論理インターフェース</h4>
+                        <p>アドレスとリンク状態</p>
+                    </div>
+                    <span class="interface-count">${items.length}件</span>
+                </div>
+                <div class="dash-iface-list" role="table" aria-label="論理インターフェース一覧">
+                    <div class="iface-table-head" role="row">
+                        <span role="columnheader">インターフェース</span>
+                        <span role="columnheader">IPアドレス</span>
+                        <span role="columnheader">リンク</span>
+                    </div>
+                    ${items.join("")}
+                </div>
+            </section>
         </div>
     `;
+}
+
+export function ifaceRowHtml(name: string, status: string, ip: string, speed: string, isError = false): string {
+    const ipSpan = isError
+        ? `<span class="iface-ip iface-ip-muted" role="cell"><span class="iface-mobile-label">IP</span>${escapeHtml(ip)}</span>`
+        : `<span class="iface-ip" role="cell"><span class="iface-mobile-label">IP</span>${escapeHtml(ip)}</span>`;
+    const statusLabel = interfaceStatusLabel(status, isError);
+    return `
+        <div class="iface-row" role="row">
+            <span class="iface-name" role="cell">
+                <span class="status-dot ${status}" aria-hidden="true"></span>
+                <span class="iface-identity">
+                    <strong>${escapeHtml(name)}</strong>
+                    <small>${statusLabel}</small>
+                </span>
+            </span>
+            ${ipSpan}
+            <span class="iface-speed" role="cell"><span class="iface-mobile-label">リンク</span>${escapeHtml(speed)}</span>
+        </div>
+    `;
+}
+
+function interfaceStatusLabel(status: string, isError: boolean): string {
+    if (isError) return "取得失敗";
+    if (status === "up") return "リンクアップ";
+    if (status === "down") return "リンクダウン";
+    if (status === "warning") return "要確認";
+    return "状態不明";
 }
 
 export function detectInterfaceStatus(value: string): "up" | "down" | "warning" | "unknown" {

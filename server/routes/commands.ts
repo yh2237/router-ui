@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { executeCommand, getConnection } from "../lib/connection.js";
 import { parseOutput } from "../lib/parsers.js";
+import { settingsGroupLabels, settingsNavigation } from "../lib/settings-navigation.js";
 
 const commands = new Hono();
 
@@ -11,25 +12,69 @@ commands.get("/api/device/:connId/settings", (c) => {
 
     const { config } = conn;
     const cats = collectCategories(config.commands);
-    const firstCat = cats[0]?.key ?? "";
+    const supportsEditing = config.vendor.toUpperCase() === "YAMAHA";
+    const initialUrl = supportsEditing
+        ? `/api/device/${connId}/settings/edit/time`
+        : `/api/device/${connId}/settings/category/${cats[0]?.key ?? ""}`;
 
     const sidebar = cats
         .map(
-            (cat, i) => `
-                <button class="category-item${i === 0 ? " active" : ""}" hx-get="/api/device/${connId}/settings/category/${cat.key}" hx-target="#settings-content" onclick="this.closest('.settings-sidebar').querySelectorAll('.category-item').forEach(function(item){item.classList.remove('active')});this.classList.add('active')">${cat.label}</button>
+            (cat, index) => `
+                <button type="button" class="category-item${!supportsEditing && index === 0 ? " active" : ""}" data-settings-url="/api/device/${connId}/settings/category/${cat.key}">${cat.label}</button>
             `,
         )
         .join("");
+    const settingsSidebar = supportsEditing
+        ? renderSettingsNavigation(connId)
+        : `
+            <div class="settings-nav-header"><span>DEVICE</span><strong>参照・確認</strong></div>
+            ${sidebar}
+        `;
 
-    return c.html(`
-        <div class="settings-layout">
-            <div class="settings-sidebar">${sidebar}</div>
-            <div class="settings-content" id="settings-content" hx-get="/api/device/${connId}/settings/category/${firstCat}" hx-trigger="load">
+    return c.html(renderSettingsView(settingsSidebar, initialUrl));
+});
+
+export function renderSettingsView(settingsSidebar: string, initialUrl: string): string {
+    return `
+        <aside id="settings-secondary-sidebar"
+               class="settings-secondary-sidebar"
+               aria-label="設定項目"
+               hx-swap-oob="outerHTML">
+            ${settingsSidebar}
+        </aside>
+        <div class="settings-page">
+            <div class="settings-content" id="settings-content" hx-get="${initialUrl}" hx-trigger="load">
                 <div class="spinner htmx-indicator"></div>
             </div>
         </div>
-    `);
-});
+    `;
+}
+
+export function renderSettingsNavigation(connId: string): string {
+    let currentGroup = "";
+    const items = settingsNavigation.map((item, index) => {
+        const groupLabel = item.group !== currentGroup
+            ? `<span class="settings-sidebar-label">${settingsGroupLabels[item.group]}</span>`
+            : "";
+        currentGroup = item.group;
+        return `
+            ${groupLabel}
+            <button type="button"
+                    class="category-item${index === 0 ? " active" : ""}"
+                    data-settings-url="/api/device/${connId}/settings/edit/${item.key}">
+                ${item.label}
+            </button>
+        `;
+    }).join("");
+
+    return `
+        <div class="settings-nav-header">
+            <span>CONFIGURATION</span>
+            <strong>設定</strong>
+        </div>
+        ${items}
+    `;
+}
 
 commands.get("/api/device/:connId/settings/category/:catKey", (c) => {
     const connId = c.req.param("connId");

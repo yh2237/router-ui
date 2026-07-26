@@ -67,3 +67,56 @@ test("does not claim a physical switch-port state from only an aggregate interfa
     assert.match(html, /panel-state-unknown/);
     assert.doesNotMatch(html, /panel-state-up[^"]*"[^>]*data-panel-element="lan1\.1"/);
 });
+
+test("renders PNG parts from a v2 catalog and switches their state asset", () => {
+    const imagePanel: DevicePanelConfig = {
+        schemaVersion: 2,
+        model: "IMAGE",
+        width: 200,
+        height: 100,
+        theme: "yamaha",
+        background: { part: "background", x: 0, y: 0, width: 200, height: 100 },
+        partCatalog: {
+            schemaVersion: 1,
+            vendor: "test",
+            parts: {
+                background: {
+                    kind: "background",
+                    size: [200, 100],
+                    states: { unknown: "/img/background.png" },
+                },
+                lamp: {
+                    kind: "led",
+                    size: [20, 8],
+                    states: {
+                        unknown: "/img/lamp-off.png",
+                        down: "/img/lamp-off.png",
+                        up: "/img/lamp-on.png",
+                    },
+                },
+            },
+        },
+        elements: [{
+            type: "led",
+            id: "power",
+            label: "POWER",
+            part: "lamp",
+            x: 20,
+            y: 70,
+            width: 20,
+            height: 8,
+            rotation: 180,
+            statusSource: "system.power",
+        }],
+    };
+
+    const html = renderDevicePanel(imagePanel, {
+        "system.power": { status: "up" },
+    });
+
+    assert.match(html, /href="\/img\/background\.png"/);
+    assert.match(html, /href="\/img\/lamp-on\.png"/);
+    assert.match(html, /transform="rotate\(180 30 74\)"/);
+    assert.match(html, /data-panel-element="power"/);
+    assert.doesNotMatch(html, /panel-chassis/);
+});

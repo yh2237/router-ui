@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server/index.js",
     "start:tsx": "tsx server/index.ts",
-    "test": "tsx --test transports/**/*.test.ts server/**/*.test.ts",
+    "test": "tsx --test transports/**/*.test.ts server/**/*.test.ts scripts/**/*.test.ts",
+    "panel:import": "tsx scripts/import-figma-panel.ts",
     "probe:device": "tsx scripts/probe-device.ts"
   },
   "dependencies": {

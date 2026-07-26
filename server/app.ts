@@ -6,6 +6,7 @@ import commands from "./routes/commands.js";
 import dashboard from "./routes/dashboard.js";
 import terminal, { initTerminalWs } from "./routes/terminal.js";
 import diagnostics from "./routes/diagnostics.js";
+import settings from "./routes/settings.js";
 import { renderTemplate } from "./lib/template.js";
 import { listModels } from "./lib/config.js";
 
@@ -16,6 +17,7 @@ app.route("/", commands);
 app.route("/", dashboard);
 app.route("/", terminal);
 app.route("/", diagnostics);
+app.route("/", settings);
 
 app.get("/", (c) => {
     const models = listModels();

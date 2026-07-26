@@ -3,13 +3,21 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { deepMerge } from "./merge.js";
-import type { DevicePanelConfig, SeriesConfig, ModelEntry, ResolvedConfig, TransportType } from "./types.js";
+import type {
+    DevicePanelConfig,
+    PanelPartCatalog,
+    SeriesConfig,
+    ModelEntry,
+    ResolvedConfig,
+    TransportType,
+} from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const compiledDevicesDir = resolve(__dirname, "../../devices");
 const sourceDevicesDir = resolve(__dirname, "../../../devices");
 const DEVICES_DIR = existsSync(compiledDevicesDir) ? compiledDevicesDir : sourceDevicesDir;
 const PANELS_DIR = resolve(DEVICES_DIR, "panels");
+const PARTS_DIR = resolve(DEVICES_DIR, "parts");
 
 function loadYaml<T>(filePath: string): T {
     const raw = readFileSync(filePath, "utf-8");
@@ -48,7 +56,17 @@ export function loadPanel(name: string): DevicePanelConfig {
     if (!existsSync(path)) {
         throw new Error(`Panel config not found: ${name}`);
     }
-    return loadYaml<DevicePanelConfig>(path);
+    const panel = loadYaml<DevicePanelConfig>(path);
+    if (panel.schemaVersion === 2) {
+        const vendor = panel.theme === "neutral" ? undefined : panel.theme;
+        if (!vendor) throw new Error(`Panel part catalog vendor is missing: ${name}`);
+        const catalogPath = resolve(PARTS_DIR, `${vendor}.yaml`);
+        if (!existsSync(catalogPath)) {
+            throw new Error(`Panel part catalog not found: ${vendor}`);
+        }
+        panel.partCatalog = loadYaml<PanelPartCatalog>(catalogPath);
+    }
+    return panel;
 }
 
 export function listModels(): { model: string; series: string; vendor: string; transport: TransportType }[] {

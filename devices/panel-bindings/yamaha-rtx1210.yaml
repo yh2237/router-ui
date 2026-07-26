@@ -1,0 +1,57 @@
+formatVersion: 1
+output:
+  panel: "devices/panels/yamaha-rtx1210.yaml"
+  catalog: "devices/parts/yamaha.yaml"
+
+panel:
+  match: "Yamaha_RTX1210"
+  model: "RTX1210"
+  brand: "YAMAHA"
+  vendor: "yamaha"
+  theme: "yamaha"
+  sourceScale: 2
+  background:
+    path: "Yamaha_RTX1210_Base"
+    part: "yamaha.background.rtx1210"
+
+parts:
+  Yamaha_RTX1210_Base:
+    id: "yamaha.background.rtx1210"
+    kind: "background"
+    assetDirectory: "web/img/device-panels/yamaha/backgrounds/rtx1210"
+    stateMap: { unknown: "base" }
+  RJ45:
+    id: "yamaha.port.rj45-type-01"
+    kind: "port"
+    assetDirectory: "web/img/device-panels/yamaha/ports/rj45-type-01"
+    stateMap: { unknown: "down", down: "down", up: "up", warning: "warning", error: "error" }
+  RJ45_Console:
+    id: "yamaha.port.console-type-01"
+    kind: "port"
+    assetDirectory: "web/img/device-panels/yamaha/ports/console-type-01"
+    stateMap: { unknown: "down", down: "down", up: "up", warning: "warning", error: "error" }
+  Yamaha_Lamp01:
+    id: "yamaha.led.system-type-01"
+    kind: "led"
+    assetDirectory: "web/img/device-panels/yamaha/leds/system-type-01"
+    stateMap: { unknown: "down", down: "down", up: "up", warning: "warning", error: "error" }
+
+elements:
+  "Port/Console/Port_1": { id: "console", label: "CONSOLE", statusSource: "system.console" }
+  "Port/LAN1/Port_1": { id: "lan1.1", label: "1", statusSource: "interface.lan1.port.1" }
+  "Port/LAN1/Port_2": { id: "lan1.2", label: "2", statusSource: "interface.lan1.port.2" }
+  "Port/LAN1/Port_3": { id: "lan1.3", label: "3", statusSource: "interface.lan1.port.3" }
+  "Port/LAN1/Port_4": { id: "lan1.4", label: "4", statusSource: "interface.lan1.port.4" }
+  "Port/LAN1/Port_5": { id: "lan1.5", label: "5", statusSource: "interface.lan1.port.5", rotation: 180 }
+  "Port/LAN1/Port_6": { id: "lan1.6", label: "6", statusSource: "interface.lan1.port.6", rotation: 180 }
+  "Port/LAN1/Port_7": { id: "lan1.7", label: "7", statusSource: "interface.lan1.port.7", rotation: 180 }
+  "Port/LAN1/Port_8": { id: "lan1.8", label: "8", statusSource: "interface.lan1.port.8", rotation: 180 }
+  "Port/LAN2/Port_1": { id: "lan2", label: "LAN2", statusSource: "interface.lan2" }
+  "Port/LAN3/Port_1": { id: "lan3", label: "LAN3", statusSource: "interface.lan3", rotation: 180 }
+  "Port/ISDN/Port_1": { id: "bri1", label: "ISDN", statusSource: "interface.bri1" }
+  "Lamp/POWER": { id: "power", label: "POWER", statusSource: "system.power" }
+  "Lamp/ALARM": { id: "alarm", label: "ALARM", statusSource: "system.alarm" }
+  "Lamp/STATUS": { id: "status", label: "STATUS", statusSource: "system.status" }
+  "Lamp/microSD": { id: "microsd", label: "microSD", statusSource: "storage.microsd" }
+  "Lamp/USB": { id: "usb", label: "USB", statusSource: "storage.usb" }
+  "Lamp/DOWNLOAD": { id: "download", label: "DOWNLOAD", statusSource: "system.download" }

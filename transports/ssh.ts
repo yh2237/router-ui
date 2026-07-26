@@ -44,6 +44,34 @@ export class SshTransport implements Transport {
         return await executeInShell(shell, cmd, promptRegex, 30000);
     }
 
+    async uploadFile(remotePath: string, content: Buffer): Promise<void> {
+        const sftp = await this.openSftp();
+        try {
+            await new Promise<void>((resolve, reject) => {
+                sftp.writeFile(remotePath, content, (error) => {
+                    if (error) reject(new Error(`SFTP upload failed: ${error.message}`));
+                    else resolve();
+                });
+            });
+        } finally {
+            sftp.end();
+        }
+    }
+
+    async removeFile(remotePath: string): Promise<void> {
+        const sftp = await this.openSftp();
+        try {
+            await new Promise<void>((resolve, reject) => {
+                sftp.unlink(remotePath, (error) => {
+                    if (error) reject(new Error(`SFTP delete failed: ${error.message}`));
+                    else resolve();
+                });
+            });
+        } finally {
+            sftp.end();
+        }
+    }
+
     async close(): Promise<void> {
         this.isClosing = true;
         if (!this.client) return;
@@ -67,6 +95,16 @@ export class SshTransport implements Transport {
             if (this.shell === shell) this.shell = null;
         });
         return shell;
+    }
+
+    private async openSftp(): Promise<import("ssh2").SFTPWrapper> {
+        if (!this.client || this.isClosing) throw new Error("Not connected");
+        return await new Promise((resolve, reject) => {
+            this.client!.sftp((error, sftp) => {
+                if (error) reject(new Error(`SFTP start failed: ${error.message}`));
+                else resolve(sftp);
+            });
+        });
     }
 }
 

@@ -9,6 +9,55 @@
   panel: "yamaha-rtx1210"
 ```
 
+## PNGパネル（schemaVersion 2）
+
+Figmaから生成するパネルは`schemaVersion: 2`を使用します。背景と状態付き部品は
+`devices/parts/<vendor>.yaml`の部品IDを参照します。
+
+```yaml
+schemaVersion: 2
+model: "RTX1210"
+width: 750
+height: 256
+theme: "yamaha"
+brand: "YAMAHA"
+background:
+  part: "yamaha.background.rtx1210"
+  x: 0
+  y: 0
+  width: 750
+  height: 256
+elements:
+  - type: "port"
+    id: "lan1.1"
+    label: "1"
+    part: "yamaha.port.rj45-type-01"
+    x: 180.5
+    y: 47
+    width: 64
+    height: 64
+    statusSource: "interface.lan1.port.1"
+```
+
+PNGはSVG内の`image`要素として重ねるため、パネル全体はレスポンシブに拡大縮小されます。
+状態が変わると部品カタログの`states`から別のPNGを選択します。
+
+上下反転したポートは要素に`rotation: 180`を指定します。回転中心は部品の中央です。
+
+```yaml
+- type: "port"
+  id: "lan1.5"
+  part: "yamaha.port.rj45-type-01"
+  x: 180.5
+  y: 111
+  width: 64
+  height: 64
+  rotation: 180
+  statusSource: "interface.lan1.port.5"
+```
+
+Figmaからの生成手順は[Figmaパネルエクスポーター設計](figma-exporter.md)を参照してください。
+
 ## Coordinate system
 
 `width` と `height` がパネルの論理座標系になります。すべての要素は独立した `x` / `y`
@@ -48,8 +97,8 @@ elements:
 - `led`: 状態ランプ
 
 `port-group` は `columns`、ポートサイズ、縦横の間隔を指定します。グループそのものの
-位置は自由です。PNG部品を使用する形式へ移行する場合も、座標と状態ソースは同じ考え方を
-維持します。
+位置は自由です。Figmaエクスポーターは個々のInstance位置を保持するため、初期版では
+`port-group`へ圧縮せず、個別の`port`として生成します。
 
 ## State sources
 

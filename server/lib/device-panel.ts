@@ -16,6 +16,8 @@ export interface PanelRuntimeValue {
 export type PanelRuntimeState = Record<string, PanelRuntimeValue>;
 
 export function renderDevicePanel(panel: DevicePanelConfig, state: PanelRuntimeState): string {
+    if (panel.schemaVersion === 2) return renderImageDevicePanel(panel, state);
+
     const elements = panel.elements.map((element) => renderElement(element, state)).join("");
     const title = `${panel.brand ? `${panel.brand} ` : ""}${panel.model} 前面パネル`;
 
@@ -37,6 +39,142 @@ export function renderDevicePanel(panel: DevicePanelConfig, state: PanelRuntimeS
             </figcaption>
         </figure>
     `;
+}
+
+function renderImageDevicePanel(panel: DevicePanelConfig, state: PanelRuntimeState): string {
+    if (!panel.background || !panel.partCatalog) {
+        throw new Error(`Panel ${panel.model} is missing its background or part catalog`);
+    }
+
+    const background = resolvePartImage(panel, panel.background.part, "unknown");
+    const elements = panel.elements.map((element) => renderImageElement(panel, element, state)).join("");
+    const title = `${panel.brand ? `${panel.brand} ` : ""}${panel.model} 前面パネル`;
+
+    return `
+        <figure class="device-panel device-panel--image device-panel--${escapeAttr(panel.theme)}">
+            <svg class="device-panel-svg" viewBox="0 0 ${panel.width} ${panel.height}"
+                role="img" aria-labelledby="device-panel-title device-panel-desc">
+                <title id="device-panel-title">${escapeHtml(title)}</title>
+                <desc id="device-panel-desc">各ポートとランプの状態を実機の配置に合わせて表示します。</desc>
+                <image class="panel-background-image" href="${escapeAttr(background)}"
+                    x="${panel.background.x}" y="${panel.background.y}"
+                    width="${panel.background.width}" height="${panel.background.height}" />
+                ${elements}
+            </svg>
+            <figcaption class="device-panel-legend">
+                <span><i class="panel-legend-dot panel-state-up"></i>リンクアップ</span>
+                <span><i class="panel-legend-dot panel-state-down"></i>リンクダウン</span>
+                <span><i class="panel-legend-dot panel-state-warning"></i>警告</span>
+                <span><i class="panel-legend-dot panel-state-unknown"></i>未取得</span>
+            </figcaption>
+        </figure>
+    `;
+}
+
+function renderImageElement(
+    panel: DevicePanelConfig,
+    element: PanelElement,
+    state: PanelRuntimeState,
+): string {
+    if (element.type === "label") {
+        const fontSize = element.fontSize ?? 12;
+        const baseline = element.height ? element.y + Math.max(0, (element.height - fontSize) / 2) : element.y;
+        const style = [
+            element.fontFamily ? `font-family:'${cssValue(element.fontFamily)}',var(--font-mono)` : "",
+            element.fontWeight ? `font-weight:${element.fontWeight}` : "",
+            element.color ? `fill:${cssValue(element.color)}` : "",
+            `font-size:${fontSize}px`,
+        ].filter(Boolean).join(";");
+        return `<text class="panel-label panel-label--image" x="${element.x}" y="${baseline}"
+            dominant-baseline="hanging" text-anchor="${element.align ?? "start"}"
+            style="${escapeAttr(style)}">${escapeHtml(element.text)}</text>`;
+    }
+
+    if (element.type === "port-group") {
+        return element.ports.map((port, index) => {
+            if (!port.part) throw new Error(`Panel part is missing for ${port.id}`);
+            const column = index % element.columns;
+            const row = Math.floor(index / element.columns);
+            const x = element.x + column * (element.portWidth + (element.gapX ?? 0));
+            const y = element.y + row * (element.portHeight + (element.gapY ?? 0));
+            return renderPartImage(
+                panel,
+                port.id,
+                port.label,
+                port.part,
+                x,
+                y,
+                element.portWidth,
+                element.portHeight,
+                resolveState(port.statusSource, state),
+                port.rotation,
+            );
+        }).join("");
+    }
+
+    if (!element.part) throw new Error(`Panel part is missing for ${element.id}`);
+    const value = resolveState(element.statusSource, state);
+    if (element.type === "port") {
+        return renderPartImage(
+            panel,
+            element.id,
+            element.label,
+            element.part,
+            element.x,
+            element.y,
+            element.width,
+            element.height,
+            value,
+            element.rotation,
+        );
+    }
+
+    const part = panel.partCatalog?.parts[element.part];
+    const width = element.width ?? part?.size[0];
+    const height = element.height ?? part?.size[1];
+    if (!width || !height) throw new Error(`Panel part size is missing for ${element.id}`);
+    return renderPartImage(
+        panel,
+        element.id,
+        element.label,
+        element.part,
+        element.x,
+        element.y,
+        width,
+        height,
+        value,
+        element.rotation,
+    );
+}
+
+function renderPartImage(
+    panel: DevicePanelConfig,
+    id: string,
+    label: string,
+    partId: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    value: PanelRuntimeValue,
+    rotation = 0,
+): string {
+    const src = resolvePartImage(panel, partId, value.status);
+    const title = panelItemTitle(label, value);
+    const transform = rotation === 0
+        ? ""
+        : ` transform="rotate(${rotation} ${x + width / 2} ${y + height / 2})"`;
+    return `<g class="panel-image-part panel-state-${value.status}" data-panel-element="${escapeAttr(id)}"
+        tabindex="0" role="group" aria-label="${escapeAttr(title)}">
+        <title>${escapeHtml(title)}</title>
+        <image href="${escapeAttr(src)}" x="${x}" y="${y}" width="${width}" height="${height}"${transform} />
+    </g>`;
+}
+
+function resolvePartImage(panel: DevicePanelConfig, partId: string, status: PanelState): string {
+    const part = panel.partCatalog?.parts[partId];
+    if (!part) throw new Error(`Unknown panel part: ${partId}`);
+    return part.states[status] ?? part.states.unknown;
 }
 
 function renderElement(element: PanelElement, state: PanelRuntimeState): string {
@@ -82,7 +220,7 @@ function renderPort(port: PanelPortElement, state: PanelRuntimeState): string {
     const cavityInset = Math.max(7, Math.min(port.width, port.height) * 0.18);
 
     return `
-        <g class="panel-port panel-port--${escapeAttr(port.portType)} panel-state-${value.status}"
+        <g class="panel-port panel-port--${escapeAttr(port.portType ?? "other")} panel-state-${value.status}"
             data-panel-element="${escapeAttr(port.id)}" tabindex="0" role="group"
             aria-label="${escapeAttr(title)}">
             <title>${escapeHtml(title)}</title>
@@ -168,4 +306,8 @@ function escapeHtml(value: string): string {
 
 function escapeAttr(value: string): string {
     return escapeHtml(value).replace(/"/g, "&quot;");
+}
+
+function cssValue(value: string): string {
+    return value.replace(/[;<>{}]/g, "");
 }

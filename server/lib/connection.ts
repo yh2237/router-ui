@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createTransport, type TransportType } from "../../transports/index.js";
 import { resolveConfig } from "./config.js";
 import type { DeviceConnection, TransportOptions } from "./types.js";
@@ -5,9 +6,8 @@ import type { DeviceConnection, TransportOptions } from "./types.js";
 const connections = new Map<string, DeviceConnection>();
 const commandTails = new Map<string, Promise<void>>();
 
-let nextId = 1;
 function generateId(): string {
-    return `conn-${nextId++}`;
+    return randomUUID();
 }
 
 export interface ConnectParams {
@@ -36,6 +36,7 @@ export async function connect(params: ConnectParams): Promise<string> {
         model: params.model,
         host: params.host,
         port,
+        changeToken: randomUUID(),
         transport,
         config,
     });
@@ -50,9 +51,28 @@ export function getConnection(id: string): DeviceConnection | undefined {
 export function executeCommand(id: string, cmd: string): Promise<string> {
     const conn = connections.get(id);
     if (!conn) return Promise.reject(new Error("Not connected"));
+    return queueConnectionTask(id, () => conn.transport.exec(cmd, conn.config.prompt_regex));
+}
 
+export function uploadFile(id: string, remotePath: string, content: Buffer): Promise<void> {
+    const conn = connections.get(id);
+    if (!conn) return Promise.reject(new Error("Not connected"));
+    if (!conn.transport.uploadFile) {
+        return Promise.reject(new Error("この接続方式はファイル転送に対応していません。SSH/SFTP接続を使用してください。"));
+    }
+    return queueConnectionTask(id, () => conn.transport.uploadFile!(remotePath, content));
+}
+
+export function removeFile(id: string, remotePath: string): Promise<void> {
+    const conn = connections.get(id);
+    if (!conn) return Promise.reject(new Error("Not connected"));
+    if (!conn.transport.removeFile) return Promise.resolve();
+    return queueConnectionTask(id, () => conn.transport.removeFile!(remotePath));
+}
+
+function queueConnectionTask<T>(id: string, task: () => Promise<T>): Promise<T> {
     const previous = commandTails.get(id) ?? Promise.resolve();
-    const execution = previous.then(() => conn.transport.exec(cmd, conn.config.prompt_regex));
+    const execution = previous.then(task);
     commandTails.set(id, execution.then(() => undefined, () => undefined));
     return execution;
 }

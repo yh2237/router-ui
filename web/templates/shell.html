@@ -6,26 +6,32 @@
   <button class="tab active"
     hx-get="/api/device/{{connId}}/dashboard"
     hx-target="#tab-content"
-    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>ダッシュボード</button>
+    hx-sync="#tab-content:replace"
+    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelector('.app-workbench').classList.remove('settings-open');document.getElementById('settings-secondary-sidebar').hidden=true;document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>ダッシュボード</button>
   <button class="tab"
     hx-get="/api/device/{{connId}}/settings"
     hx-target="#tab-content"
-    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16"/></svg>設定</button>
+    hx-sync="#tab-content:replace"
+    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelector('.app-workbench').classList.add('settings-open');document.getElementById('settings-secondary-sidebar').hidden=false;document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16"/></svg>設定</button>
   <button class="tab"
     hx-get="/api/device/{{connId}}/diagnostics"
     hx-target="#tab-content"
-    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16M6 16l4-4 3 2 5-7"/></svg>診断</button>
+    hx-sync="#tab-content:replace"
+    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelector('.app-workbench').classList.remove('settings-open');document.getElementById('settings-secondary-sidebar').hidden=true;document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16M6 16l4-4 3 2 5-7"/></svg>診断</button>
   <button class="tab"
     hx-get="/api/device/{{connId}}/terminal"
     hx-target="#tab-content"
-    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 7 5 5-5 5M13 17h6"/></svg>ターミナル</button>
+    hx-sync="#tab-content:replace"
+    onclick="window.routerUiTerminalCleanup && window.routerUiTerminalCleanup();document.querySelector('.app-workbench').classList.remove('settings-open');document.getElementById('settings-secondary-sidebar').hidden=true;document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});this.classList.add('active')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 7 5 5-5 5M13 17h6"/></svg>ターミナル</button>
   </nav>
   <button class="btn-disconnect" aria-label="機器から切断" hx-delete="/api/device/{{connId}}" hx-target="#app-root" hx-swap="innerHTML">切断</button>
 </aside>
+<aside id="settings-secondary-sidebar" class="settings-secondary-sidebar" aria-label="設定項目" hidden></aside>
 <main class="main-content">
   <div id="tab-content"
     hx-get="/api/device/{{connId}}/dashboard"
     hx-trigger="load"
+    hx-sync="this:replace"
     hx-target="this">
     <div class="dash-loading">読み込み中...</div>
   </div>

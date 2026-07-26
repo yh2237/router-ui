@@ -1,0 +1,43 @@
+schemaVersion: 1
+vendor: "yamaha"
+parts:
+  yamaha.background.rtx1210:
+    kind: "background"
+    size:
+      - 750
+      - 256
+    states:
+      unknown: "/img/device-panels/yamaha/backgrounds/rtx1210/base.png"
+  yamaha.port.rj45-type-01:
+    kind: "port"
+    size:
+      - 64
+      - 64
+    states:
+      unknown: "/img/device-panels/yamaha/ports/rj45-type-01/down.png"
+      down: "/img/device-panels/yamaha/ports/rj45-type-01/down.png"
+      up: "/img/device-panels/yamaha/ports/rj45-type-01/up.png"
+      warning: "/img/device-panels/yamaha/ports/rj45-type-01/warning.png"
+      error: "/img/device-panels/yamaha/ports/rj45-type-01/error.png"
+  yamaha.port.console-type-01:
+    kind: "port"
+    size:
+      - 64
+      - 64
+    states:
+      unknown: "/img/device-panels/yamaha/ports/console-type-01/down.png"
+      down: "/img/device-panels/yamaha/ports/console-type-01/down.png"
+      up: "/img/device-panels/yamaha/ports/console-type-01/up.png"
+      warning: "/img/device-panels/yamaha/ports/console-type-01/warning.png"
+      error: "/img/device-panels/yamaha/ports/console-type-01/error.png"
+  yamaha.led.system-type-01:
+    kind: "led"
+    size:
+      - 32
+      - 12
+    states:
+      unknown: "/img/device-panels/yamaha/leds/system-type-01/down.png"
+      down: "/img/device-panels/yamaha/leds/system-type-01/down.png"
+      up: "/img/device-panels/yamaha/leds/system-type-01/up.png"
+      warning: "/img/device-panels/yamaha/leds/system-type-01/warning.png"
+      error: "/img/device-panels/yamaha/leds/system-type-01/error.png"
