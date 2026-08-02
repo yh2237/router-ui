@@ -20,6 +20,7 @@ export class SshTransport implements Transport {
                 username: opts.username,
                 password: opts.password,
                 privateKey: opts.privateKey,
+                hostVerifier: opts.hostKeyVerifier,
                 readyTimeout: 10000,
             });
         });

@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import {
     executeCommand,
     getConnection,
+    registerConnectionCleanup,
     removeFile,
     uploadFile,
 } from "../lib/connection.js";
@@ -24,16 +25,61 @@ import {
     type PlannedCommand,
     type SettingFields,
 } from "../lib/yamaha-settings.js";
+import { getBrowserSession } from "../lib/auth.js";
+import {
+    extractCurrentSettings,
+    parseDhcpSetting,
+    parseDnsSetting,
+    parseInterfaceAddressSettings,
+    parseNatDescriptors,
+    parseStaticRoutes,
+    unavailableCurrentSettings,
+    type CurrentSettingsSnapshot,
+    type DnsSetting,
+    type DhcpScopeSetting,
+    type DhcpSetting,
+    type InterfaceAddressSetting,
+    type NatDescriptorSetting,
+    type StaticRouteSetting,
+} from "../lib/settings-current.js";
 
 const settings = new Hono();
 const PREVIEW_LIFETIME_MS = 10 * 60 * 1000;
 const MAX_CONFIG_FILE_SIZE = 1024 * 1024;
+const CURRENT_CONFIG_CACHE_MS = 2_000;
+const currentConfigCache = new Map<string, { expiresAt: number; promise: Promise<string> }>();
+registerConnectionCleanup((connId) => {
+    for (const key of currentConfigCache.keys()) {
+        if (key.endsWith(`:${connId}`)) currentConfigCache.delete(key);
+    }
+});
 const pendingPreviews = new Map<string, {
     connId: string;
     section: string;
     commands: PlannedCommand[];
+    returnUrl?: string;
     createdAt: number;
 }>();
+
+settings.get("/api/device/:connId/settings/view/:sectionKey", async (c) => {
+    const connId = c.req.param("connId");
+    const section = c.req.param("sectionKey");
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
+    if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
+    if (!isYamaha(conn)) return c.html(renderError("設定変更は現在YAMAHA RTXのみ対応しています。"), 400);
+    if (!isOverviewSection(section)) {
+        return c.html(renderError("現在値の一覧に対応していない設定項目です。"), 404);
+    }
+
+    try {
+        const raw = await getCurrentConfig(connId, ownerSessionId);
+        if (looksLikeYamahaError(raw)) throw new Error("show config failed");
+        return c.html(renderOverviewSection(connId, section, raw));
+    } catch {
+        return c.html(renderOverviewLoadError(connId, section));
+    }
+});
 const pendingConfigImports = new Map<string, {
     connId: string;
     filename: string;
@@ -44,17 +90,20 @@ const pendingConfigImports = new Map<string, {
     createdAt: number;
 }>();
 
-settings.get("/api/device/:connId/settings/edit/time", (c) => {
+settings.get("/api/device/:connId/settings/edit/time", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("この設定画面は現在YAMAHA RTXのみ対応しています。"), 400);
-    return c.html(renderTimeForm(connId, conn.changeToken));
+    const current = await loadCurrentSettings(connId, ownerSessionId, "time");
+    return c.html(renderTimeForm(connId, conn.changeToken, current));
 });
 
-settings.get("/api/device/:connId/settings/edit/:sectionKey", (c) => {
+settings.get("/api/device/:connId/settings/edit/:sectionKey", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("設定変更は現在YAMAHA RTXのみ対応しています。"), 400);
 
@@ -63,12 +112,59 @@ settings.get("/api/device/:connId/settings/edit/:sectionKey", (c) => {
     if (item.key === "config-file") {
         return c.html(renderConfigImportForm(connId, conn.changeToken));
     }
-    return c.html(renderSectionForm(connId, conn.changeToken, item));
+    if (isOverviewSection(item.key)) {
+        try {
+            const raw = await getCurrentConfig(connId, ownerSessionId);
+            if (looksLikeYamahaError(raw)) throw new Error("show config failed");
+            if (item.key === "dns") {
+                return c.html(renderDnsEditForm(connId, conn.changeToken, parseDnsSetting(raw)));
+            }
+            if (item.key === "interfaces") {
+                const interfaceName = c.req.query("interface");
+                const family = c.req.query("family");
+                if (!/^(lan1|lan2|lan3)$/.test(interfaceName ?? "") || !/^(ipv4|ipv6)$/.test(family ?? "")) {
+                    return c.html(renderInterfaceOverview(connId, parseInterfaceAddressSettings(raw)));
+                }
+                const row = parseInterfaceAddressSettings(raw).find(({ name }) => name === interfaceName)!;
+                return c.html(renderInterfaceEditForm(
+                    connId,
+                    conn.changeToken,
+                    row,
+                    family as "ipv4" | "ipv6",
+                ));
+            }
+            if (item.key === "routing") {
+                const routes = parseStaticRoutes(raw);
+                const routeIndex = parseIndex(c.req.query("route"), routes.length);
+                if (c.req.query("mode") !== "new" && routeIndex === undefined) {
+                    return c.html(renderRoutingOverview(connId, routes));
+                }
+                return c.html(renderRoutingEditForm(connId, conn.changeToken, routeIndex === undefined ? undefined : routes[routeIndex]));
+            }
+            if (item.key === "nat") {
+                const descriptors = parseNatDescriptors(raw);
+                const descriptor = c.req.query("descriptor");
+                const current = descriptors.find((row) => row.descriptor === descriptor);
+                if (c.req.query("mode") !== "new" && !current) return c.html(renderNatOverview(connId, descriptors));
+                return c.html(renderNatEditForm(connId, conn.changeToken, current));
+            }
+            const dhcp = parseDhcpSetting(raw);
+            const mode = c.req.query("mode");
+            if (mode === "service") return c.html(renderDhcpServiceForm(connId, conn.changeToken, dhcp));
+            const scope = dhcp.scopes.find((row) => row.scope === c.req.query("scope"));
+            if (mode !== "new-scope" && !scope) return c.html(renderDhcpOverview(connId, dhcp));
+            return c.html(renderDhcpScopeForm(connId, conn.changeToken, scope));
+        } catch {
+            return c.html(renderOverviewLoadError(connId, item.key));
+        }
+    }
+    const current = await loadCurrentSettings(connId, ownerSessionId, item.key);
+    return c.html(renderSectionForm(connId, conn.changeToken, item, current));
 });
 
 settings.post("/api/device/:connId/settings/import/preview", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const conn = getConnection(connId, getBrowserSession(c).id);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("設定ファイル読込は現在YAMAHA RTXのみ対応しています。"), 400);
     if (!conn.transport.uploadFile) {
@@ -140,7 +236,8 @@ settings.post("/api/device/:connId/settings/import/preview", async (c) => {
 
 settings.post("/api/device/:connId/settings/import/apply", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("設定ファイル読込は現在YAMAHA RTXのみ対応しています。"), 400);
 
@@ -161,25 +258,25 @@ settings.post("/api/device/:connId/settings/import/apply", async (c) => {
 
     const remotePath = `/router-ui-import-${randomUUID()}.txt`;
     try {
-        const before = await executeCommand(connId, "show config");
+        const before = await executeCommand(connId, ownerSessionId, "show config");
         if (looksLikeYamahaError(before)) {
             return c.html(renderConfigImportError(
                 "現在設定を取得できないため、読込を中止しました。管理ユーザー権限を確認してください。",
                 connId,
             ));
         }
-        await uploadFile(connId, remotePath, pending.content);
+        await uploadFile(connId, ownerSessionId, remotePath, pending.content);
         const loadCommand = buildYamahaLoadCommand(
             remotePath,
             pending.mode,
             pending.rollbackTimer,
             pending.preserveHostKey,
         );
-        const output = await executeCommand(connId, loadCommand);
+        const output = await executeCommand(connId, ownerSessionId, loadCommand);
         if (looksLikeYamahaError(output)) {
             return c.html(renderConfigImportExecutionError(output, connId));
         }
-        const after = await executeCommand(connId, "show config");
+        const after = await executeCommand(connId, ownerSessionId, "show config");
         if (looksLikeYamahaError(after)) {
             return c.html(renderConfigImportError(
                 `読込後の設定を取得できませんでした。confirmやsaveを実行せず、${pending.rollbackTimer}秒の自動ロールバックを待ってください。`,
@@ -200,7 +297,7 @@ settings.post("/api/device/:connId/settings/import/apply", async (c) => {
         ));
     } finally {
         try {
-            await removeFile(connId, remotePath);
+            await removeFile(connId, ownerSessionId, remotePath);
         } catch {
             // A load can intentionally change or disconnect the management interface.
         }
@@ -209,7 +306,8 @@ settings.post("/api/device/:connId/settings/import/apply", async (c) => {
 
 settings.post("/api/device/:connId/settings/import/confirm", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     const body = await c.req.parseBody();
     if (!hasValidChangeToken(conn, bodyValue(body.changeToken))) {
@@ -219,7 +317,7 @@ settings.post("/api/device/:connId/settings/import/confirm", async (c) => {
         return c.html(renderError("ロールバックを停止するには CONFIRM と入力してください。"));
     }
     try {
-        const output = await executeCommand(connId, "confirm");
+        const output = await executeCommand(connId, ownerSessionId, "confirm");
         if (looksLikeYamahaError(output)) {
             return c.html(`${renderError("機器がconfirmコマンドにエラーを返しました。")}<pre class="terminal-output">${escapeHtml(output)}</pre>`);
         }
@@ -238,7 +336,7 @@ settings.post("/api/device/:connId/settings/import/confirm", async (c) => {
 settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-preview", async (c) => {
     const connId = c.req.param("connId");
     const section = c.req.param("sectionKey");
-    const conn = getConnection(connId);
+    const conn = getConnection(connId, getBrowserSession(c).id);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("設定変更は現在YAMAHA RTXのみ対応しています。"), 400);
 
@@ -249,20 +347,21 @@ settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-preview", a
         return c.html(renderError("操作トークンが無効です。画面を再読み込みしてください。"), 403);
     }
 
+    const returnUrl = editReturnUrl(connId, section, body);
     try {
         const commands = buildYamahaSettingCommands(section, stringFields(body));
         cleanExpiredPreviews();
         const previewId = randomUUID();
         const createdAt = Date.now();
-        pendingPreviews.set(previewId, { connId, section, commands, createdAt });
+        pendingPreviews.set(previewId, { connId, section, commands, returnUrl, createdAt });
         setTimeout(() => {
             const preview = pendingPreviews.get(previewId);
             if (preview?.createdAt === createdAt) pendingPreviews.delete(previewId);
         }, PREVIEW_LIFETIME_MS).unref();
-        return c.html(renderGenericPreview(connId, conn.changeToken, item, previewId, commands));
+        return c.html(renderGenericPreview(connId, conn.changeToken, item, previewId, commands, returnUrl));
     } catch (error) {
         if (error instanceof SettingsValidationError) {
-            return c.html(renderGenericValidationErrors(error.issues, connId, section));
+            return c.html(renderGenericValidationErrors(error.issues, connId, section, returnUrl));
         }
         throw error;
     }
@@ -271,7 +370,8 @@ settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-preview", a
 settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-apply", async (c) => {
     const connId = c.req.param("connId");
     const section = c.req.param("sectionKey");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("設定変更は現在YAMAHA RTXのみ対応しています。"), 400);
 
@@ -295,12 +395,13 @@ settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-apply", asy
             ["プレビューの有効期限が切れています。もう一度内容を確認してください。"],
             connId,
             section,
+            settingsLandingUrl(connId, section),
         ));
     }
 
     const results: { command: string; preview: string; output: string }[] = [];
     try {
-        const before = await executeCommand(connId, "show config");
+        const before = await executeCommand(connId, ownerSessionId, "show config");
         if (looksLikeYamahaError(before)) {
             return c.html(renderError("現在設定を取得できないため、設定変更を中止しました。管理ユーザー権限を確認してください。"));
         }
@@ -309,7 +410,7 @@ settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-apply", asy
             const result = {
                 command: command.command,
                 preview: command.preview,
-                output: await executeCommand(connId, command.command),
+                output: await executeCommand(connId, ownerSessionId, command.command),
             };
             results.push(result);
             if (looksLikeYamahaError(result.output)) {
@@ -317,9 +418,10 @@ settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-apply", asy
                 break;
             }
         }
-        if (!commandSucceeded) await restoreGlobalCommandContext(connId, section);
-        const after = await executeCommand(connId, "show config");
+        if (!commandSucceeded) await restoreGlobalCommandContext(connId, ownerSessionId, section);
+        const after = await executeCommand(connId, ownerSessionId, "show config");
         if (looksLikeYamahaError(after)) commandSucceeded = false;
+        currentConfigCache.delete(`${ownerSessionId}:${connId}`);
         return c.html(renderGenericApplyResult(
             connId,
             conn.changeToken,
@@ -329,7 +431,7 @@ settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-apply", asy
             commandSucceeded,
         ));
     } catch (error) {
-        await restoreGlobalCommandContext(connId, section);
+        await restoreGlobalCommandContext(connId, ownerSessionId, section);
         return c.html(renderError(
             `設定の適用中に処理を継続できなくなりました。機器の現在状態を確認してください。${error instanceof Error ? ` ${error.message}` : ""}`,
         ));
@@ -338,7 +440,7 @@ settings.post("/api/device/:connId/settings/edit/:sectionKey/generic-apply", asy
 
 settings.post("/api/device/:connId/settings/edit/time/preview", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const conn = getConnection(connId, getBrowserSession(c).id);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("この設定画面は現在YAMAHA RTXのみ対応しています。"), 400);
 
@@ -361,7 +463,8 @@ settings.post("/api/device/:connId/settings/edit/time/preview", async (c) => {
 
 settings.post("/api/device/:connId/settings/edit/time/apply", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("この設定画面は現在YAMAHA RTXのみ対応しています。"), 400);
 
@@ -381,21 +484,21 @@ settings.post("/api/device/:connId/settings/edit/time/apply", async (c) => {
     }
 
     try {
-        const before = await executeCommand(connId, "show config");
+        const before = await executeCommand(connId, ownerSessionId, "show config");
         if (looksLikeYamahaError(before)) {
             return c.html(renderError("現在設定を取得できないため、設定変更を中止しました。管理ユーザー権限を確認してください。"));
         }
         const results: { command: string; output: string }[] = [];
         let commandSucceeded = true;
         for (const command of commands) {
-            const result = { command, output: await executeCommand(connId, command) };
+            const result = { command, output: await executeCommand(connId, ownerSessionId, command) };
             results.push(result);
             if (looksLikeYamahaError(result.output)) {
                 commandSucceeded = false;
                 break;
             }
         }
-        const after = await executeCommand(connId, "show config");
+        const after = await executeCommand(connId, ownerSessionId, "show config");
         if (looksLikeYamahaError(after)) commandSucceeded = false;
         return c.html(renderApplyResult(
             connId,
@@ -415,7 +518,8 @@ settings.post("/api/device/:connId/settings/edit/time/apply", async (c) => {
 
 settings.post("/api/device/:connId/settings/save", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(renderError("機器との接続が見つかりません。"), 404);
     if (!isYamaha(conn)) return c.html(renderError("設定保存は現在YAMAHA RTXのみ対応しています。"), 400);
 
@@ -428,7 +532,7 @@ settings.post("/api/device/:connId/settings/save", async (c) => {
     }
 
     try {
-        const output = await executeCommand(connId, "save");
+        const output = await executeCommand(connId, ownerSessionId, "save");
         if (looksLikeYamahaError(output)) {
             return c.html(`
                 ${renderError("機器が保存コマンドにエラーを返しました。応答を確認してください。")}
@@ -447,7 +551,74 @@ settings.post("/api/device/:connId/settings/save", async (c) => {
     }
 });
 
-function renderTimeForm(connId: string, changeToken: string): string {
+async function loadCurrentSettings(
+    connId: string,
+    ownerSessionId: string,
+    section: string,
+): Promise<CurrentSettingsSnapshot> {
+    try {
+        const raw = await getCurrentConfig(connId, ownerSessionId);
+        if (looksLikeYamahaError(raw)) {
+            return unavailableCurrentSettings("機器が現在設定の取得を拒否しました。管理ユーザー権限を確認してください。");
+        }
+        return extractCurrentSettings(raw, section);
+    } catch {
+        return unavailableCurrentSettings("現在設定を取得できませんでした。接続状態を確認して、設定項目を開き直してください。");
+    }
+}
+
+async function getCurrentConfig(connId: string, ownerSessionId: string): Promise<string> {
+    const key = `${ownerSessionId}:${connId}`;
+    const cached = currentConfigCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+    const entry = {
+        expiresAt: Number.POSITIVE_INFINITY,
+        promise: executeCommand(connId, ownerSessionId, "show config"),
+    };
+    currentConfigCache.set(key, entry);
+    entry.promise.then(
+        () => {
+            if (currentConfigCache.get(key) === entry) entry.expiresAt = Date.now() + CURRENT_CONFIG_CACHE_MS;
+        },
+        () => {
+            if (currentConfigCache.get(key) === entry) currentConfigCache.delete(key);
+        },
+    );
+    return entry.promise;
+}
+
+function renderCurrentSettings(current: CurrentSettingsSnapshot): string {
+    const labels = {
+        configured: "明示設定あり",
+        default: "機器既定値",
+        unavailable: "取得不可",
+    } as const;
+    const lines = current.lines.map((line) => `<li><code>${escapeHtml(line)}</code></li>`).join("");
+    return `
+        <section class="current-settings current-settings--${current.state}" aria-labelledby="current-settings-title">
+            <div class="current-settings-head">
+                <div>
+                    <h3 id="current-settings-title">現在の関連設定</h3>
+                </div>
+                <span class="current-settings-state">${labels[current.state]}</span>
+            </div>
+            <p>${escapeHtml(current.message)}</p>
+            ${lines ? `
+                <details class="current-settings-details" open>
+                    <summary>取得した設定コマンド</summary>
+                    <ul>${lines}</ul>
+                </details>
+            ` : ""}
+        </section>
+    `;
+}
+
+function renderTimeForm(
+    connId: string,
+    changeToken: string,
+    current: CurrentSettingsSnapshot,
+): string {
     return `
         <section class="settings-editor">
             <header class="settings-editor-header">
@@ -461,7 +632,9 @@ function renderTimeForm(connId: string, changeToken: string): string {
             <div class="settings-notice">
                 この画面から適用しても起動設定には自動保存しません。日付・時刻とNTP同期は実行直後から動作へ反映されます。設定変更には管理ユーザー権限が必要です。
             </div>
+            ${renderCurrentSettings(current)}
             <form class="settings-form"
+                  data-settings-section="time"
                   hx-post="/api/device/${escapeAttribute(connId)}/settings/edit/time/preview"
                   hx-target="#settings-content"
                   hx-disabled-elt="find button">
@@ -470,15 +643,12 @@ function renderTimeForm(connId: string, changeToken: string): string {
                 <fieldset class="settings-fieldset">
                     <legend>タイムゾーン</legend>
                     <div class="settings-grid">
-                        <div class="form-field">
-                            <label for="timezone-mode">指定方法</label>
-                            <select class="form-input" id="timezone-mode" name="timezoneMode">
-                                <option value="unchanged" selected>変更しない</option>
-                                <option value="jst">日本標準時（JST）</option>
-                                <option value="utc">協定世界時（UTC）</option>
-                                <option value="custom">時差を指定</option>
-                            </select>
-                        </div>
+                        ${selectField("指定方法", "timezoneMode", [
+                            ["unchanged", "変更しない"],
+                            ["jst", "JST"],
+                            ["utc", "UTC"],
+                            ["custom", "時差を指定"],
+                        ])}
                         <div class="form-field">
                             <label for="timezone-offset">UTCからの時差</label>
                             <input class="form-input" id="timezone-offset" name="timezoneOffset"
@@ -507,14 +677,11 @@ function renderTimeForm(connId: string, changeToken: string): string {
                 <fieldset class="settings-fieldset">
                     <legend>NTP</legend>
                     <div class="settings-grid">
-                        <div class="form-field">
-                            <label for="ntp-source-mode">送信元アドレス</label>
-                            <select class="form-input" id="ntp-source-mode" name="ntpSourceMode">
-                                <option value="unchanged" selected>変更しない</option>
-                                <option value="set">指定する</option>
-                                <option value="remove">現在の指定を削除</option>
-                            </select>
-                        </div>
+                        ${selectField("送信元アドレス", "ntpSourceMode", [
+                            ["unchanged", "変更しない"],
+                            ["set", "指定する"],
+                            ["remove", "削除"],
+                        ])}
                         <div class="form-field">
                             <label for="ntp-source-address">IPv4アドレス</label>
                             <input class="form-input" id="ntp-source-address" name="ntpSourceAddress"
@@ -526,7 +693,9 @@ function renderTimeForm(connId: string, changeToken: string): string {
                                    autocomplete="off" placeholder="ntp.example.jp">
                         </div>
                         <div class="form-field settings-checks">
-                            <label><input type="checkbox" name="syncNtp" value="on"> 入力したNTPサーバーと同期する</label>
+                            <label><input type="checkbox" name="syncNtp" value="on"> NTPサーバーと同期する</label>
+                        </div>
+                        <div class="form-field settings-checks">
                             <label><input type="checkbox" name="ntpSyslog" value="on"> 同期結果をSYSLOGへ記録する</label>
                         </div>
                     </div>
@@ -752,10 +921,395 @@ function renderConfigImportError(message: string, connId: string): string {
     `;
 }
 
+const OVERVIEW_SECTIONS = new Set(["interfaces", "routing", "nat", "dns", "dhcp"]);
+
+function isOverviewSection(section: string): boolean {
+    return OVERVIEW_SECTIONS.has(section);
+}
+
+function renderOverviewSection(connId: string, section: string, raw: string): string {
+    switch (section) {
+        case "interfaces": return renderInterfaceOverview(connId, parseInterfaceAddressSettings(raw));
+        case "routing": return renderRoutingOverview(connId, parseStaticRoutes(raw));
+        case "nat": return renderNatOverview(connId, parseNatDescriptors(raw));
+        case "dns": return renderDnsOverview(connId, parseDnsSetting(raw));
+        case "dhcp": return renderDhcpOverview(connId, parseDhcpSetting(raw));
+        default: return renderError("現在値の一覧に対応していない設定項目です。");
+    }
+}
+
+function parseIndex(value: string | undefined, length: number): number | undefined {
+    if (!/^\d+$/.test(value ?? "")) return undefined;
+    const index = Number(value);
+    return index >= 0 && index < length ? index : undefined;
+}
+
+export function renderInterfaceOverview(connId: string, rows: InterfaceAddressSetting[]): string {
+    const body = rows.map((row) => `
+        <tr>
+            <th scope="row"><span class="settings-interface-name">${row.name.toUpperCase()}</span></th>
+            <td data-label="IPv4">${renderAddressValue(row.ipv4Mode, row.ipv4Address)}</td>
+            <td class="settings-row-action">
+                <button class="btn-use" type="button"
+                        hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/interfaces?interface=${row.name}&amp;family=ipv4"
+                        hx-target="#settings-content">IPv4設定</button>
+            </td>
+            <td data-label="IPv6">${renderAddressValue(row.ipv6Mode, row.ipv6Address)}</td>
+            <td class="settings-row-action">
+                <button class="btn-use" type="button"
+                        hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/interfaces?interface=${row.name}&amp;family=ipv6"
+                        hx-target="#settings-content">IPv6設定</button>
+            </td>
+        </tr>
+    `).join("");
+    return `
+        <section class="settings-overview">
+            ${renderOverviewHeader("INTERFACES / ADDRESS", "インターフェースIP", "現在の割り当てを確認し、変更するアドレス種別を選択します。", connId, "interfaces")}
+            <div class="settings-overview-table-wrap">
+                <table class="settings-overview-table">
+                    <thead><tr><th>IF</th><th>IPv4</th><th><span class="visually-hidden">IPv4操作</span></th><th>IPv6</th><th><span class="visually-hidden">IPv6操作</span></th></tr></thead>
+                    <tbody>${body}</tbody>
+                </table>
+            </div>
+            <p class="settings-overview-note">ここに表示されるのは LAN1〜LAN3 のIPアドレス設定です。適用後も起動設定へは自動保存しません。</p>
+        </section>
+    `;
+}
+
+export function renderDnsOverview(connId: string, dns: DnsSetting): string {
+    const servers = dns.servers.length
+        ? `<ul class="settings-value-list">${dns.servers.map((server) => `<li><code>${escapeHtml(server)}</code></li>`).join("")}</ul>`
+        : `<span class="settings-value-empty">明示設定なし</span>`;
+    const spoof = dns.privateAddressSpoof === "on"
+        ? "ルーターでNXDomainを返す"
+        : dns.privateAddressSpoof === "off" ? "上位DNSへ転送する" : "機器既定値";
+    return `
+        <section class="settings-overview">
+            ${renderOverviewHeader("DNS / RESOLVER", "DNS設定", "現在のDNSサーバーとプライベートアドレス問い合わせ設定を確認できます。", connId, "dns")}
+            <dl class="settings-summary-list">
+                <div><dt>DNSサーバー</dt><dd>${servers}</dd></div>
+                <div><dt>プライベートアドレスPTR問い合わせ</dt><dd>${escapeHtml(spoof)}</dd></div>
+            </dl>
+            <div class="settings-actions settings-overview-actions">
+                <span class="settings-action-note">編集画面には現在値を引き継ぎます。</span>
+                <button class="btn-primary" type="button"
+                        hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/dns"
+                        hx-target="#settings-content">DNS設定を編集</button>
+            </div>
+        </section>
+    `;
+}
+
+export function renderRoutingOverview(connId: string, routes: StaticRouteSetting[]): string {
+    const rows = routes.map((route) => `
+        <tr>
+            <th scope="row"><code class="settings-value-meta">${escapeHtml(route.network)}</code></th>
+            <td data-label="ゲートウェイ">${renderRouteGateway(route)}</td>
+            <td data-label="メトリック">${route.metric ? escapeHtml(route.metric) : "既定値"}</td>
+            <td data-label="接続時のみ">${route.hide ? "有効" : "無効"}</td>
+            <td class="settings-row-action">${route.editable
+                ? `<button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/routing?route=${route.index}" hx-target="#settings-content">設定</button>`
+                : `<button class="btn-use" type="button" disabled title="この経路のオプションは現在の編集画面に未対応です">未対応</button>`}
+            </td>
+        </tr>
+    `).join("");
+    return `
+        <section class="settings-overview">
+            ${renderOverviewHeader("ROUTING / IPv4", "静的ルート", "現在の宛先とゲートウェイを確認し、経路単位で変更します。", connId, "routing")}
+            ${routes.length ? overviewTable("宛先,ゲートウェイ,メトリック,接続時のみ,操作", rows) : renderSettingsEmpty("静的ルートは設定されていません。")}
+            ${renderOverviewAddAction(connId, "routing?mode=new", "新しい静的ルートを追加")}
+        </section>
+    `;
+}
+
+export function renderNatOverview(connId: string, descriptors: NatDescriptorSetting[]): string {
+    const rows = descriptors.map((row) => `
+        <tr>
+            <th scope="row"><code>${escapeHtml(row.descriptor)}</code></th>
+            <td data-label="動作">${escapeHtml(natTypeLabel(row.type))}</td>
+            <td data-label="外側"><code class="settings-value-meta">${escapeHtml(row.outer || "—")}</code></td>
+            <td data-label="内側"><code class="settings-value-meta">${escapeHtml(row.inner || "—")}</code></td>
+            <td data-label="適用先">${escapeHtml(row.interfaces.map((value) => value.toUpperCase()).join(", ") || "未適用")}</td>
+            <td class="settings-row-action">${row.editable
+                ? `<button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/nat?descriptor=${row.descriptor}" hx-target="#settings-content">設定</button>`
+                : `<button class="btn-use" type="button" disabled title="このNAT形式は現在の編集画面に未対応です">未対応</button>`}
+            </td>
+        </tr>
+    `).join("");
+    return `
+        <section class="settings-overview">
+            ${renderOverviewHeader("NAT / DESCRIPTOR", "NAT", "NATディスクリプターの動作とアドレス、LANへの適用状況を確認します。", connId, "nat")}
+            ${descriptors.length ? overviewTable("番号,動作,外側,内側,適用先,操作", rows) : renderSettingsEmpty("NATディスクリプターは設定されていません。")}
+            ${renderOverviewAddAction(connId, "nat?mode=new", "新しいNATディスクリプターを追加")}
+        </section>
+    `;
+}
+
+export function renderDhcpOverview(connId: string, dhcp: DhcpSetting): string {
+    const serviceLabels = { server: "DHCPサーバー", relay: "DHCPリレー", off: "無効", default: "機器既定値" } as const;
+    const rows = dhcp.scopes.map((scope) => `
+        <tr>
+            <th scope="row"><code>${escapeHtml(scope.scope)}</code></th>
+            <td data-label="配布範囲"><code class="settings-value-meta">${escapeHtml(`${scope.startAddress}–${scope.endAddress}/${scope.prefix}`)}</code></td>
+            <td data-label="ゲートウェイ"><code class="settings-value-meta">${escapeHtml(scope.gateway || "ルーター自身")}</code></td>
+            <td data-label="リース期間">${escapeHtml(scope.expire || "既定値")}</td>
+            <td class="settings-row-action">${scope.editable
+                ? `<button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/dhcp?scope=${scope.scope}" hx-target="#settings-content">設定</button>`
+                : `<button class="btn-use" type="button" disabled title="このスコープのオプションは現在の編集画面に未対応です">未対応</button>`}
+            </td>
+        </tr>
+    `).join("");
+    return `
+        <section class="settings-overview">
+            ${renderOverviewHeader("DHCP / SERVICE", "DHCP", "DHCPの動作状態と配布スコープを確認し、それぞれ個別に変更します。", connId, "dhcp")}
+            <dl class="settings-summary-list settings-summary-list--compact">
+                <div><dt>DHCP動作</dt><dd><span class="settings-value-main">${serviceLabels[dhcp.service]}</span></dd><dd class="settings-summary-action"><button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/dhcp?mode=service" hx-target="#settings-content">動作設定</button></dd></div>
+            </dl>
+            <h3 class="settings-overview-subtitle">DHCPスコープ</h3>
+            ${dhcp.scopes.length ? overviewTable("番号,配布範囲,ゲートウェイ,リース期間,操作", rows) : renderSettingsEmpty("DHCPスコープは設定されていません。")}
+            ${renderOverviewAddAction(connId, "dhcp?mode=new-scope", "新しいDHCPスコープを追加")}
+        </section>
+    `;
+}
+
+function overviewTable(headings: string, rows: string): string {
+    const cells = headings.split(",").map((heading) => `<th>${heading === "操作" ? `<span class="visually-hidden">操作</span>` : heading}</th>`).join("");
+    return `<div class="settings-overview-table-wrap"><table class="settings-overview-table settings-overview-table--dense"><thead><tr>${cells}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function renderSettingsEmpty(message: string): string {
+    return `<div class="settings-table-empty"><span aria-hidden="true">—</span><p>${escapeHtml(message)}</p></div>`;
+}
+
+function renderOverviewAddAction(connId: string, target: string, label: string): string {
+    return `<div class="settings-actions settings-overview-actions"><span class="settings-action-note">適用前に生成コマンドを確認できます。</span><button class="btn-primary" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/${escapeAttribute(target)}" hx-target="#settings-content">${escapeHtml(label)}</button></div>`;
+}
+
+function renderRouteGateway(route: StaticRouteSetting): string {
+    const labels = { address: "IPv4", dhcp: "DHCP", pp: "PP", tunnel: "トンネル", null: "NULL", unsupported: "未対応形式" } as const;
+    return `<span class="settings-value-main">${labels[route.gatewayType]}</span>${route.gateway ? `<code class="settings-value-meta">${escapeHtml(route.gateway)}</code>` : ""}`;
+}
+
+function natTypeLabel(type: string): string {
+    return (({ none: "変換なし", nat: "NAT", masquerade: "IPマスカレード", "nat-masquerade": "NAT＋マスカレード" } as Record<string, string>)[type] ?? type) || "未設定";
+}
+
+function renderOverviewHeader(kicker: string, title: string, description: string, connId: string, section: string): string {
+    return `
+        <header class="settings-editor-header settings-overview-header">
+            <div><span class="section-label">${kicker}</span><h2>${title}</h2><p>${description}</p></div>
+            <button class="btn-use settings-refresh" type="button"
+                    hx-get="/api/device/${escapeAttribute(connId)}/settings/view/${escapeAttribute(section)}"
+                    hx-target="#settings-content">再取得</button>
+        </header>
+    `;
+}
+
+function renderAddressValue(mode: InterfaceAddressSetting["ipv4Mode"] | InterfaceAddressSetting["ipv6Mode"], address: string): string {
+    const labels = { static: "固定", dhcp: "DHCP", auto: "自動生成", unconfigured: "未設定" } as const;
+    return `<span class="settings-value-main">${labels[mode]}</span>${address
+        ? `<code class="settings-value-meta">${escapeHtml(address)}</code>`
+        : ""}`;
+}
+
+function renderInterfaceEditForm(
+    connId: string,
+    changeToken: string,
+    row: InterfaceAddressSetting,
+    family: "ipv4" | "ipv6",
+): string {
+    const isV4 = family === "ipv4";
+    const mode = isV4 ? row.ipv4Mode : row.ipv6Mode;
+    const address = isV4 ? row.ipv4Address : row.ipv6Address;
+    const options: [string, string][] = isV4
+        ? [["static", "固定IPv4アドレス"], ["dhcp", "DHCPクライアント"], ["remove", "設定を削除"]]
+        : [["static-v6", "固定IPv6アドレス"], ["auto-v6", "RAから自動生成"], ["dhcp-v6", "DHCPv6から自動生成"], ["remove-v6", "設定を削除"]];
+    const selected = isV4
+        ? (mode === "unconfigured" ? "static" : mode)
+        : mode === "static" ? "static-v6" : mode === "auto" ? "auto-v6" : mode === "dhcp" ? "dhcp-v6" : "static-v6";
+    return `
+        <section class="settings-editor">
+            <header class="settings-editor-header">
+                <div><span class="section-label">${row.name.toUpperCase()} / ${family.toUpperCase()}</span><h2>${row.name.toUpperCase()} ${family.toUpperCase()}設定</h2><p>現在値をもとに、更新後の割り当て方法を指定します。</p></div>
+                <span class="settings-stage">1 / 3 入力</span>
+            </header>
+            <div class="settings-current-summary"><span>現在</span>${renderAddressValue(mode, address)}</div>
+            <form class="settings-form" data-settings-section="interfaces"
+                  hx-post="/api/device/${escapeAttribute(connId)}/settings/edit/interfaces/generic-preview"
+                  hx-target="#settings-content" hx-disabled-elt="find button">
+                <input type="hidden" name="changeToken" value="${escapeAttribute(changeToken)}">
+                <input type="hidden" name="interface" value="${row.name}">
+                <input type="hidden" name="family" value="${family}">
+                ${fieldset(`${family.toUpperCase()}アドレス`, `
+                    ${selectField("割り当て方法", "action", options, selected)}
+                    ${textFieldValue("IPアドレス", "address", address, isV4 ? "192.168.10.1/24" : "2001:db8::1/64", "固定アドレスを選んだ場合に入力します。")}
+                `)}
+                <div class="settings-actions">
+                    <button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/view/interfaces" hx-target="#settings-content">一覧へ戻る</button>
+                    <button class="btn-primary" type="submit">コマンドを確認</button>
+                </div>
+            </form>
+        </section>
+    `;
+}
+
+function renderDnsEditForm(connId: string, changeToken: string, dns: DnsSetting): string {
+    const serverAction = "set";
+    return `
+        <section class="settings-editor">
+            <header class="settings-editor-header">
+                <div><span class="section-label">DNS / RESOLVER</span><h2>DNS設定を編集</h2><p>現在値を更新後の内容へ書き換えます。</p></div>
+                <span class="settings-stage">1 / 3 入力</span>
+            </header>
+            <form class="settings-form" data-settings-section="dns"
+                  hx-post="/api/device/${escapeAttribute(connId)}/settings/edit/dns/generic-preview"
+                  hx-target="#settings-content" hx-disabled-elt="find button">
+                <input type="hidden" name="changeToken" value="${escapeAttribute(changeToken)}">
+                ${fieldset("DNSサーバー", `
+                    ${selectField("設定", "serverAction", [["set", "指定したサーバーへ更新"], ["remove", "設定を削除"]], serverAction)}
+                    ${textFieldValue("DNSサーバー", "servers", dns.servers.join(", "), "1.1.1.1, 8.8.8.8", "IPv4アドレスを最大4個、空白またはカンマで区切ります。")}
+                    ${selectField("プライベートアドレスPTR問い合わせ", "privateSpoof", [["unchanged", "変更しない（機器既定値）"], ["on", "ルーターでNXDomainを返す"], ["off", "上位DNSへ転送する"]], dns.privateAddressSpoof === "default" ? "unchanged" : dns.privateAddressSpoof)}
+                `)}
+                <div class="settings-actions">
+                    <button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/view/dns" hx-target="#settings-content">現在値へ戻る</button>
+                    <button class="btn-primary" type="submit">コマンドを確認</button>
+                </div>
+            </form>
+        </section>
+    `;
+}
+
+export function renderRoutingEditForm(connId: string, changeToken: string, route?: StaticRouteSetting): string {
+    const gatewayType = route?.gatewayType === "unsupported" ? "address" : route?.gatewayType ?? "address";
+    return renderTargetedEditor({
+        connId,
+        changeToken,
+        section: "routing",
+        kicker: route ? `ROUTING / ${route.network}` : "ROUTING / NEW",
+        title: route ? `${route.network} の経路設定` : "静的ルートを追加",
+        description: route ? "選択した宛先のゲートウェイとメトリックを変更します。" : "新しい宛先ネットワークとゲートウェイを指定します。",
+        returnQuery: route ? `route=${route.index}` : "mode=new",
+        current: route?.raw,
+        fields: fieldset("IPv4静的経路", `
+            ${selectField("操作", "action", route ? [["add", "この経路を更新"], ["remove", "この経路を削除"]] : [["add", "経路を追加"]])}
+            ${configuredTextField("宛先ネットワーク", "network", route?.network ?? "", "default または 192.0.2.0/24", "default またはIPv4ネットワーク。", Boolean(route))}
+            ${selectField("ゲートウェイ種別", "gatewayType", [["address", "IPv4アドレス"], ["dhcp", "DHCP取得"], ["pp", "PPインターフェース"], ["tunnel", "トンネル"], ["null", "NULLインターフェース"]], gatewayType)}
+            ${configuredTextField("ゲートウェイIPv4", "gateway", gatewayType === "address" ? route?.gateway ?? "" : "", "192.0.2.1")}
+            ${selectField("DHCP取得インターフェース", "gatewayInterface", [["lan1", "LAN1"], ["lan2", "LAN2"], ["lan3", "LAN3"]], gatewayType === "dhcp" ? route?.gateway : "lan1")}
+            ${configuredTextField("PP／トンネル番号", "gatewayNumber", gatewayType === "pp" || gatewayType === "tunnel" ? route?.gateway ?? "" : "", "1")}
+            ${configuredTextField("メトリック", "metric", route?.metric ?? "", "1", "空欄なら機器既定値です。")}
+            ${checkboxFieldChecked("hide", "接続中だけ経路を有効にする（hide）", route?.hide ?? false)}
+        `),
+    });
+}
+
+export function renderNatEditForm(connId: string, changeToken: string, current?: NatDescriptorSetting): string {
+    return renderTargetedEditor({
+        connId,
+        changeToken,
+        section: "nat",
+        kicker: current ? `NAT / DESCRIPTOR ${current.descriptor}` : "NAT / NEW",
+        title: current ? `NAT ${current.descriptor} を編集` : "NATディスクリプターを追加",
+        description: "動作タイプ、アドレス範囲、LANへの適用先を指定します。",
+        returnQuery: current ? `descriptor=${current.descriptor}` : "mode=new",
+        current: current ? `nat descriptor type ${current.descriptor} ${current.type}` : undefined,
+        fields: fieldset("NATディスクリプター", `
+            ${selectField("操作", "action", current ? [["configure", "この設定を更新"], ["remove", "動作タイプを削除"]] : [["configure", "設定を追加"]])}
+            ${configuredTextField("ディスクリプター番号", "descriptor", current?.descriptor ?? "", "1", "1以上の番号。", Boolean(current))}
+            ${selectField("動作タイプ", "type", [["masquerade", "IPマスカレード"], ["nat", "動的・静的NAT"], ["nat-masquerade", "NAT＋マスカレード"], ["none", "変換しない"]], current?.type || "masquerade")}
+            ${configuredTextField("外側アドレス", "outer", current?.outer ?? "", "ipcp", "ipcp、primary、secondary、IPv4またはIPv4範囲。空欄なら変更しません。")}
+            ${configuredTextField("内側アドレス", "inner", current?.inner ?? "", "auto", "auto、IPv4またはIPv4範囲。空欄なら変更しません。")}
+            ${selectField("LANへの適用", "attachInterface", [["", "この変更では適用先を変更しない"], ["lan1", "LAN1へ適用"], ["lan2", "LAN2へ適用"], ["lan3", "LAN3へ適用"]])}
+            <p class="field-help settings-grid-span">LANを選ぶと、そのLANのNATディスクリプター一覧をこの番号だけに置き換えます。既存の複数割り当てがある場合は選択しないでください。</p>
+        `),
+    });
+}
+
+export function renderDhcpServiceForm(connId: string, changeToken: string, dhcp: DhcpSetting): string {
+    const selected = dhcp.service === "default" ? "server" : dhcp.service;
+    return renderTargetedEditor({
+        connId,
+        changeToken,
+        section: "dhcp",
+        kicker: "DHCP / SERVICE",
+        title: "DHCP動作設定",
+        description: "DHCP機能全体の動作を変更します。スコープはこの操作では変更しません。",
+        returnQuery: "mode=service",
+        current: dhcp.service === "default" ? "明示設定なし（機器既定値）" : `dhcp service ${dhcp.service}`,
+        fields: fieldset("DHCP動作", `
+            ${selectField("動作", "service", [["unchanged", "変更しない"], ["server", "DHCPサーバー"], ["relay", "DHCPリレー"], ["off", "DHCP機能を無効化"]], selected)}
+            <input type="hidden" name="scopeAction" value="unchanged">
+        `),
+    });
+}
+
+export function renderDhcpScopeForm(connId: string, changeToken: string, scope?: DhcpScopeSetting): string {
+    return renderTargetedEditor({
+        connId,
+        changeToken,
+        section: "dhcp",
+        kicker: scope ? `DHCP / SCOPE ${scope.scope}` : "DHCP / NEW SCOPE",
+        title: scope ? `DHCPスコープ ${scope.scope}` : "DHCPスコープを追加",
+        description: "配布範囲、プレフィックス、通知するゲートウェイを指定します。",
+        returnQuery: scope ? `scope=${scope.scope}` : "mode=new-scope",
+        current: scope?.raw,
+        fields: fieldset("DHCPスコープ", `
+            <input type="hidden" name="service" value="unchanged">
+            ${selectField("操作", "scopeAction", scope ? [["set", "このスコープを更新"], ["remove", "このスコープを削除"]] : [["set", "スコープを追加"]])}
+            ${configuredTextField("スコープ番号", "scope", scope?.scope ?? "", "1", "1〜65535。", Boolean(scope))}
+            ${configuredTextField("配布開始アドレス", "startAddress", scope?.startAddress ?? "", "192.168.10.100")}
+            ${configuredTextField("配布終了アドレス", "endAddress", scope?.endAddress ?? "", "192.168.10.200")}
+            ${configuredTextField("プレフィックス長", "prefix", scope?.prefix ?? "", "24")}
+            ${configuredTextField("通知するゲートウェイ", "gateway", scope?.gateway ?? "", "192.168.10.1", "空欄ならルーター自身です。")}
+            ${configuredTextField("リース期間", "expire", scope?.expire ?? "", "72:00", "分、時間:分、または infinity。空欄なら既定値です。")}
+        `),
+    });
+}
+
+function renderTargetedEditor(input: {
+    connId: string;
+    changeToken: string;
+    section: string;
+    kicker: string;
+    title: string;
+    description: string;
+    returnQuery?: string;
+    current?: string;
+    fields: string;
+}): string {
+    return `
+        <section class="settings-editor">
+            <header class="settings-editor-header">
+                <div><span class="section-label">${escapeHtml(input.kicker)}</span><h2>${escapeHtml(input.title)}</h2><p>${escapeHtml(input.description)}</p></div>
+                <span class="settings-stage">1 / 3 入力</span>
+            </header>
+            <div class="settings-notice settings-notice--warning">適用すると通信や管理接続へ影響する可能性があります。起動設定へは自動保存しません。</div>
+            ${input.current ? `<div class="settings-current-command"><span>現在</span><code>${escapeHtml(input.current)}</code></div>` : ""}
+            <form class="settings-form" data-settings-section="${escapeAttribute(input.section)}"
+                  hx-post="/api/device/${escapeAttribute(input.connId)}/settings/edit/${escapeAttribute(input.section)}/generic-preview"
+                  hx-target="#settings-content" hx-disabled-elt="find button">
+                <input type="hidden" name="changeToken" value="${escapeAttribute(input.changeToken)}">
+                ${input.returnQuery ? `<input type="hidden" name="returnQuery" value="${escapeAttribute(input.returnQuery)}">` : ""}
+                ${input.fields}
+                <div class="settings-actions">
+                    <button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(input.connId)}/settings/view/${escapeAttribute(input.section)}" hx-target="#settings-content">一覧へ戻る</button>
+                    <button class="btn-primary" type="submit">コマンドを確認</button>
+                </div>
+            </form>
+        </section>
+    `;
+}
+
+function renderOverviewLoadError(connId: string, section: string): string {
+    return `${renderError("現在設定を取得できませんでした。接続状態と管理ユーザー権限を確認してください。")}
+        <button class="btn-use" type="button" hx-get="/api/device/${escapeAttribute(connId)}/settings/view/${escapeAttribute(section)}" hx-target="#settings-content">再取得</button>`;
+}
+
 function renderSectionForm(
     connId: string,
     changeToken: string,
     item: SettingsNavigationItem,
+    current: CurrentSettingsSnapshot,
 ): string {
     const fields = renderSectionFields(item.key);
     const riskNotice = settingsRiskNotice(item.key);
@@ -774,7 +1328,9 @@ function renderSectionForm(
                     ? riskNotice
                     : "適用しても起動設定には自動保存しません。生成コマンドを次の画面で確認できます。"}
             </div>
+            ${renderCurrentSettings(current)}
             <form class="settings-form"
+                  data-settings-section="${escapeAttribute(item.key)}"
                   hx-post="/api/device/${escapeAttribute(connId)}/settings/edit/${escapeAttribute(item.key)}/generic-preview"
                   hx-target="#settings-content"
                   hx-disabled-elt="find button">
@@ -1150,12 +1706,47 @@ function textField(
     `;
 }
 
-function selectField(label: string, name: string, options: [string, string][]): string {
+function textFieldValue(
+    label: string,
+    name: string,
+    value: string,
+    placeholder: string,
+    help = "",
+): string {
+    return `
+        <div class="form-field">
+            <label for="setting-${escapeAttribute(name)}">${escapeHtml(label)}</label>
+            <input class="form-input" id="setting-${escapeAttribute(name)}" name="${escapeAttribute(name)}"
+                   autocomplete="off" value="${escapeAttribute(value)}" placeholder="${escapeAttribute(placeholder)}">
+            ${help ? `<span class="field-help">${escapeHtml(help)}</span>` : ""}
+        </div>
+    `;
+}
+
+function configuredTextField(
+    label: string,
+    name: string,
+    value: string,
+    placeholder: string,
+    help = "",
+    readonly = false,
+): string {
+    return `
+        <div class="form-field">
+            <label for="setting-${escapeAttribute(name)}">${escapeHtml(label)}</label>
+            <input class="form-input" id="setting-${escapeAttribute(name)}" name="${escapeAttribute(name)}"
+                   autocomplete="off" value="${escapeAttribute(value)}" placeholder="${escapeAttribute(placeholder)}"${readonly ? " readonly" : ""}>
+            ${help ? `<span class="field-help">${escapeHtml(help)}</span>` : ""}
+        </div>
+    `;
+}
+
+function selectField(label: string, name: string, options: [string, string][], selected = options[0]?.[0] ?? ""): string {
     return `
         <div class="form-field">
             <label for="setting-${escapeAttribute(name)}">${escapeHtml(label)}</label>
             <select class="form-input" id="setting-${escapeAttribute(name)}" name="${escapeAttribute(name)}">
-                ${options.map(([value, text]) => `<option value="${escapeAttribute(value)}">${escapeHtml(text)}</option>`).join("")}
+                ${options.map(([value, text]) => `<option value="${escapeAttribute(value)}"${value === selected ? " selected" : ""}>${escapeHtml(text)}</option>`).join("")}
             </select>
         </div>
     `;
@@ -1169,6 +1760,14 @@ function checkboxField(name: string, label: string): string {
     return `
         <div class="form-field settings-checks">
             <label><input type="checkbox" name="${escapeAttribute(name)}" value="on"> ${escapeHtml(label)}</label>
+        </div>
+    `;
+}
+
+function checkboxFieldChecked(name: string, label: string, checked: boolean): string {
+    return `
+        <div class="form-field settings-checks">
+            <label><input type="checkbox" name="${escapeAttribute(name)}" value="on"${checked ? " checked" : ""}> ${escapeHtml(label)}</label>
         </div>
     `;
 }
@@ -1217,6 +1816,7 @@ function renderGenericPreview(
     item: SettingsNavigationItem,
     previewId: string,
     commands: PlannedCommand[],
+    returnUrl: string,
 ): string {
     const commandRows = commands
         .map(({ preview }) => `<li><code>${escapeHtml(preview)}</code></li>`)
@@ -1243,7 +1843,7 @@ function renderGenericPreview(
                 <input type="hidden" name="changeToken" value="${escapeAttribute(changeToken)}">
                 <input type="hidden" name="previewId" value="${escapeAttribute(previewId)}">
                 <button class="btn-use" type="button"
-                        hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/${escapeAttribute(item.key)}"
+                        hx-get="${escapeAttribute(returnUrl)}"
                         hx-target="#settings-content">入力へ戻る</button>
                 <button class="btn-primary" type="submit">この内容を適用</button>
             </form>
@@ -1364,7 +1964,7 @@ function renderGenericApplyResult(
             ${commandSucceeded ? renderSaveSection(connId, changeToken) : ""}
             <div class="settings-actions">
                 <button class="btn-use" type="button"
-                        hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/${escapeAttribute(item.key)}"
+                        hx-get="${escapeAttribute(settingsLandingUrl(connId, item.key))}"
                         hx-target="#settings-content">${escapeHtml(item.label)}へ戻る</button>
             </div>
         </section>
@@ -1424,7 +2024,7 @@ function renderValidationErrors(issues: string[], connId: string): string {
     `;
 }
 
-function renderGenericValidationErrors(issues: string[], connId: string, section: string): string {
+function renderGenericValidationErrors(issues: string[], connId: string, section: string, returnUrl = editReturnUrl(connId, section)): string {
     const rows = issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("");
     return `
         <div class="error-message">
@@ -1432,9 +2032,34 @@ function renderGenericValidationErrors(issues: string[], connId: string, section
             <ul>${rows}</ul>
         </div>
         <button class="btn-use" type="button"
-                hx-get="/api/device/${escapeAttribute(connId)}/settings/edit/${escapeAttribute(section)}"
+                hx-get="${escapeAttribute(returnUrl)}"
                 hx-target="#settings-content">入力へ戻る</button>
     `;
+}
+
+function editReturnUrl(connId: string, section: string, body?: Record<string, string | File>): string {
+    if (section === "interfaces" && body) {
+        const name = bodyValue(body.interface);
+        const family = bodyValue(body.family);
+        if (/^lan[1-3]$/.test(name) && /^(ipv4|ipv6)$/.test(family)) {
+            return `/api/device/${connId}/settings/edit/interfaces?interface=${name}&family=${family}`;
+        }
+    }
+    if (body && ["routing", "nat", "dhcp"].includes(section)) {
+        const query = bodyValue(body.returnQuery);
+        const valid = section === "routing"
+            ? /^(?:route=\d+|mode=new)$/.test(query)
+            : section === "nat"
+                ? /^(?:descriptor=\d+|mode=new)$/.test(query)
+                : /^(?:scope=\d+|mode=(?:service|new-scope))$/.test(query);
+        if (valid) return `/api/device/${connId}/settings/edit/${section}?${query}`;
+    }
+    return `/api/device/${connId}/settings/edit/${section}`;
+}
+
+function settingsLandingUrl(connId: string, section: string): string {
+    const mode = isOverviewSection(section) ? "view" : "edit";
+    return `/api/device/${connId}/settings/${mode}/${section}`;
 }
 
 function renderError(message: string): string {
@@ -1481,7 +2106,11 @@ function cleanExpiredConfigImports(): void {
     }
 }
 
-async function restoreGlobalCommandContext(connId: string, section: string): Promise<void> {
+async function restoreGlobalCommandContext(
+    connId: string,
+    ownerSessionId: string,
+    section: string,
+): Promise<void> {
     const cleanupCommand = section === "provider"
         ? "pp select none"
         : section === "vpn"
@@ -1489,7 +2118,7 @@ async function restoreGlobalCommandContext(connId: string, section: string): Pro
             : "";
     if (!cleanupCommand) return;
     try {
-        await executeCommand(connId, cleanupCommand);
+        await executeCommand(connId, ownerSessionId, cleanupCommand);
     } catch {
         // The original transport error is more useful than a secondary cleanup error.
     }

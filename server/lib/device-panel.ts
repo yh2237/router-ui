@@ -79,15 +79,15 @@ function renderImageElement(
     if (element.type === "label") {
         const fontSize = element.fontSize ?? 12;
         const baseline = element.height ? element.y + Math.max(0, (element.height - fontSize) / 2) : element.y;
-        const style = [
-            element.fontFamily ? `font-family:'${cssValue(element.fontFamily)}',var(--font-mono)` : "",
-            element.fontWeight ? `font-weight:${element.fontWeight}` : "",
-            element.color ? `fill:${cssValue(element.color)}` : "",
-            `font-size:${fontSize}px`,
-        ].filter(Boolean).join(";");
+        const presentation = [
+            `font-family="${escapeAttr(cssValue(element.fontFamily ?? "JetBrains Mono"))}"`,
+            element.fontWeight ? `font-weight="${element.fontWeight}"` : "",
+            element.color ? `fill="${escapeAttr(cssValue(element.color))}"` : "",
+            `font-size="${fontSize}"`,
+        ].filter(Boolean).join(" ");
         return `<text class="panel-label panel-label--image" x="${element.x}" y="${baseline}"
             dominant-baseline="hanging" text-anchor="${element.align ?? "start"}"
-            style="${escapeAttr(style)}">${escapeHtml(element.text)}</text>`;
+            ${presentation}>${escapeHtml(element.text)}</text>`;
     }
 
     if (element.type === "port-group") {

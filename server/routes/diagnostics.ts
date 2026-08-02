@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { executeCommand, getConnection } from "../lib/connection.js";
+import { getBrowserSession } from "../lib/auth.js";
 
 const diagnostics = new Hono();
 
@@ -7,7 +8,7 @@ type DiagnosticKind = "ping" | "traceroute";
 
 diagnostics.get("/api/device/:connId/diagnostics", (c) => {
     const connId = c.req.param("connId");
-    if (!getConnection(connId)) {
+    if (!getConnection(connId, getBrowserSession(c).id)) {
         return c.html(`<div class="error-message">Device not connected</div>`, 404);
     }
 
@@ -59,7 +60,8 @@ diagnostics.get("/api/device/:connId/diagnostics", (c) => {
 
 diagnostics.post("/api/device/:connId/diagnostics/run", async (c) => {
     const connId = c.req.param("connId");
-    if (!getConnection(connId)) {
+    const ownerSessionId = getBrowserSession(c).id;
+    if (!getConnection(connId, ownerSessionId)) {
         return c.html(`<div class="error-message">Device not connected</div>`, 404);
     }
 
@@ -70,7 +72,7 @@ diagnostics.post("/api/device/:connId/diagnostics/run", async (c) => {
 
     try {
         const command = buildDiagnosticCommand(kind, target, count);
-        const output = await executeCommand(connId, command);
+        const output = await executeCommand(connId, ownerSessionId, command);
         return c.html(`
             <div class="diagnostic-command">$ ${escapeHtml(command)}</div>
             <pre class="terminal-output">${escapeHtml(output)}</pre>

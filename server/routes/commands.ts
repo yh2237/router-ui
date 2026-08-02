@@ -2,39 +2,54 @@ import { Hono } from "hono";
 import { executeCommand, getConnection } from "../lib/connection.js";
 import { parseOutput } from "../lib/parsers.js";
 import { settingsGroupLabels, settingsNavigation } from "../lib/settings-navigation.js";
+import { getBrowserSession } from "../lib/auth.js";
 
 const commands = new Hono();
 
 commands.get("/api/device/:connId/settings", (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const conn = getConnection(connId, getBrowserSession(c).id);
     if (!conn) return c.html(`<div class="error-message">Device not connected</div>`, 404);
 
     const { config } = conn;
     const cats = collectCategories(config.commands);
     const supportsEditing = config.vendor.toUpperCase() === "YAMAHA";
-    const initialUrl = supportsEditing
-        ? `/api/device/${connId}/settings/edit/time`
-        : `/api/device/${connId}/settings/category/${cats[0]?.key ?? ""}`;
 
     const sidebar = cats
         .map(
-            (cat, index) => `
-                <button type="button" class="category-item${!supportsEditing && index === 0 ? " active" : ""}" data-settings-url="/api/device/${connId}/settings/category/${cat.key}">${cat.label}</button>
+            (cat) => `
+                <button type="button" class="category-item" data-settings-url="/api/device/${connId}/settings/category/${cat.key}">${cat.label}</button>
             `,
         )
         .join("");
     const settingsSidebar = supportsEditing
-        ? renderSettingsNavigation(connId)
+        ? renderSettingsNavigation(connId, "interfaces")
         : `
             <div class="settings-nav-header"><span>DEVICE</span><strong>参照・確認</strong></div>
             ${sidebar}
         `;
 
-    return c.html(renderSettingsView(settingsSidebar, initialUrl));
+    return c.html(renderSettingsView(settingsSidebar, supportsEditing ? connId : undefined));
 });
 
-export function renderSettingsView(settingsSidebar: string, initialUrl: string): string {
+export function renderSettingsView(settingsSidebar: string, connId?: string): string {
+    const initialContent = connId
+        ? `
+            <div class="settings-initial-load"
+                 hx-get="/api/device/${connId}/settings/view/interfaces"
+                 hx-trigger="load"
+                 hx-target="#settings-content"
+                 hx-swap="innerHTML">
+                <span class="spinner"></span>
+                <p>インターフェースの現在設定を取得しています…</p>
+            </div>
+        `
+        : `
+            <div class="settings-placeholder">
+                <h3>設定項目を選択してください</h3>
+                <p>設定サイドバーから、確認または変更したい項目を選択してください。</p>
+            </div>
+        `;
     return `
         <aside id="settings-secondary-sidebar"
                class="settings-secondary-sidebar"
@@ -43,16 +58,17 @@ export function renderSettingsView(settingsSidebar: string, initialUrl: string):
             ${settingsSidebar}
         </aside>
         <div class="settings-page">
-            <div class="settings-content" id="settings-content" hx-get="${initialUrl}" hx-trigger="load">
-                <div class="spinner htmx-indicator"></div>
+            <div class="settings-content" id="settings-content" tabindex="-1">
+                ${initialContent}
             </div>
         </div>
     `;
 }
 
-export function renderSettingsNavigation(connId: string): string {
+export function renderSettingsNavigation(connId: string, activeKey?: string): string {
     let currentGroup = "";
-    const items = settingsNavigation.map((item, index) => {
+    const items = settingsNavigation.map((item) => {
+        const settingsUrl = settingsItemUrl(connId, item.key);
         const groupLabel = item.group !== currentGroup
             ? `<span class="settings-sidebar-label">${settingsGroupLabels[item.group]}</span>`
             : "";
@@ -60,8 +76,8 @@ export function renderSettingsNavigation(connId: string): string {
         return `
             ${groupLabel}
             <button type="button"
-                    class="category-item${index === 0 ? " active" : ""}"
-                    data-settings-url="/api/device/${connId}/settings/edit/${item.key}">
+                    class="category-item${item.key === activeKey ? " active" : ""}"
+                    data-settings-url="${settingsUrl}">
                 ${item.label}
             </button>
         `;
@@ -76,10 +92,15 @@ export function renderSettingsNavigation(connId: string): string {
     `;
 }
 
+function settingsItemUrl(connId: string, key: string): string {
+    const mode = ["interfaces", "routing", "nat", "dns", "dhcp"].includes(key) ? "view" : "edit";
+    return `/api/device/${connId}/settings/${mode}/${key}`;
+}
+
 commands.get("/api/device/:connId/settings/category/:catKey", (c) => {
     const connId = c.req.param("connId");
     const catKey = c.req.param("catKey");
-    const conn = getConnection(connId);
+    const conn = getConnection(connId, getBrowserSession(c).id);
     if (!conn) return c.html(`<div class="error-message">Device not connected</div>`, 404);
 
     const matched = Object.entries(conn.config.commands).filter(
@@ -112,14 +133,15 @@ commands.get("/api/device/:connId/settings/category/:catKey", (c) => {
 commands.post("/api/device/:connId/commands/:cmdKey/execute", async (c) => {
     const connId = c.req.param("connId");
     const cmdKey = c.req.param("cmdKey");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(`<div class="error-message">Device not connected</div>`, 404);
 
     const cmdConfig = conn.config.commands[cmdKey];
     if (!cmdConfig) return c.html(`<div class="error-message">Unknown command: ${cmdKey}</div>`, 404);
 
     try {
-        const raw = await executeCommand(connId, cmdConfig.cmd);
+        const raw = await executeCommand(connId, ownerSessionId, cmdConfig.cmd);
         const parsed = parseOutput(raw, cmdConfig.parse);
         return c.html(renderResult(raw, parsed));
     } catch (err) {

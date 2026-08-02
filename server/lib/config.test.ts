@@ -7,6 +7,7 @@ test("RTX1210 uses documented Yamaha commands", () => {
 
     assert.equal(config.transport, "ssh");
     assert.equal(config.commands.show_system.cmd, "show environment");
+    assert.equal(config.commands.show_status_packet_buffer.cmd, "show status packet-buffer");
     assert.equal(config.commands.show_route.cmd, "show ip route");
     assert.equal(config.commands.show_arp.cmd, "show arp");
     assert.equal(config.commands.show_status_dhcp.cmd, "show status dhcp");

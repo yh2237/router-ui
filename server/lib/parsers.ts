@@ -45,18 +45,7 @@ function parseRouteTable(raw: string): ParsedResult {
 }
 
 function parseYamahaStatus(raw: string): ParsedResult {
-    const lines = raw.trim().split("\n");
-    const data: Record<string, string> = {};
-    for (const line of lines) {
-        const sep = line.includes(": ") ? ": " : "=";
-        const idx = line.indexOf(sep);
-        if (idx !== -1) {
-            const key = line.slice(0, idx).trim();
-            const val = line.slice(idx + sep.length).trim();
-            if (key) data[key] = val;
-        }
-    }
-    return { type: "keyvalue", data, raw };
+    return { type: "keyvalue", data: parseKeyValueLines(raw), raw };
 }
 
 function parseYamahaRoute(raw: string): ParsedResult {
@@ -89,16 +78,46 @@ function parseYamahaRoute(raw: string): ParsedResult {
 }
 
 function parseYamahaSystem(raw: string): ParsedResult {
+    const data = parseKeyValueLines(raw);
+    setMatchedValue(data, "CPU", raw, /^\s*CPU\s*:\s*(.*?)(?=\s{2,}Memory\s*:|$)/mi);
+    setMatchedValue(data, "Memory", raw, /\bMemory\s*:\s*([^\r\n]+)/i);
+    setMatchedValue(data, "Packet Buffer", raw, /^\s*Packet\s+Buffer\s*:\s*([^\r\n]+)/mi);
+    setMatchedValue(data, "Serial Number", raw, /\bserial\s*=\s*([^\s,]+)/i);
+    setMatchedValue(data, "Firmware", raw, /^\s*Firmware\s*:\s*(\S+)/mi);
+    setMatchedValue(data, "Config File", raw, /\bConfig\.\s*file\s*:\s*(\S+)/i);
+    setMatchedValue(data, "Default Firmware", raw, /^\s*Default\s+firmware\s*:\s*(\S+)/mi);
+    setMatchedValue(data, "Default Config File", raw, /\bDefault\s+config\.\s*file\s*:\s*(\S+)/i);
+    setMatchedValue(data, "Serial Baud Rate", raw, /^\s*Serial\s+Baud(?:rate|\s+Rate)\s*:\s*([^\r\n]+)/mi);
+    setMatchedValue(data, "Boot Time", raw, /^\s*Boot\s+time\s*:\s*([^\r\n]+)/mi);
+    setMatchedValue(data, "Current Time", raw, /^\s*Current\s+time\s*:\s*([^\r\n]+)/mi);
+    return { type: "keyvalue", data, raw };
+}
+
+function setMatchedValue(
+    data: Record<string, string>,
+    key: string,
+    raw: string,
+    pattern: RegExp,
+): void {
+    const value = raw.match(pattern)?.[1]?.trim();
+    if (value) data[key] = value;
+}
+
+function parseKeyValueLines(raw: string): Record<string, string> {
     const lines = raw.trim().split("\n");
     const data: Record<string, string> = {};
     for (const line of lines) {
-        const sep = line.includes(": ") ? ": " : "=";
-        const idx = line.indexOf(sep);
+        const separators = [": ", "：", "="];
+        const sep = separators
+            .map((candidate) => ({ candidate, index: line.indexOf(candidate) }))
+            .filter(({ index }) => index >= 0)
+            .sort((a, b) => a.index - b.index)[0];
+        const idx = sep?.index ?? -1;
         if (idx !== -1) {
             const key = line.slice(0, idx).trim();
-            const val = line.slice(idx + sep.length).trim();
+            const val = line.slice(idx + sep!.candidate.length).trim();
             if (key) data[key] = val;
         }
     }
-    return { type: "keyvalue", data, raw };
+    return data;
 }

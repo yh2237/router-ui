@@ -3,134 +3,31 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="router-ui-csrf" content="{{csrfToken}}">
+  <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
   <title>Router UI</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="icon" type="image/png" href="/img/logo_blue.png">
+  <link rel="stylesheet" href="/vendor/fonts/ibm-plex-sans-jp/400.css">
+  <link rel="stylesheet" href="/vendor/fonts/ibm-plex-sans-jp/500.css">
+  <link rel="stylesheet" href="/vendor/fonts/ibm-plex-sans-jp/600.css">
+  <link rel="stylesheet" href="/vendor/fonts/ibm-plex-sans-jp/700.css">
+  <link rel="stylesheet" href="/vendor/fonts/jetbrains-mono/400.css">
+  <link rel="stylesheet" href="/vendor/fonts/jetbrains-mono/500.css">
+  <script src="/vendor/htmx/htmx.min.js" defer></script>
+  <script src="/js/connect.js" defer></script>
+  <script src="/js/app-shell.js" defer></script>
   <script src="/js/settings-navigation.js" defer></script>
+  <script src="/js/settings-editor.js" defer></script>
+  <script src="/js/terminal.js" defer></script>
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
-  <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      var trigger = document.getElementById('model-trigger');
-      var dropdown = document.getElementById('model-dropdown');
-      var search = document.getElementById('model-search');
-      var options = document.getElementById('model-options');
-      var valueInput = document.getElementById('model-value');
-      var display = document.getElementById('model-display');
-      var placeholder = document.getElementById('model-placeholder');
-
-      function filterOptions(query) {
-        var items = options.querySelectorAll('.model-option');
-        var q = query.toLowerCase();
-        for (var i = 0; i < items.length; i++) {
-          var text = items[i].textContent.toLowerCase();
-          items[i].style.display = text.indexOf(q) !== -1 ? '' : 'none';
-        }
-      }
-
-      function selectOption(el) {
-        valueInput.value = el.getAttribute('data-value');
-        display.textContent = el.textContent;
-        placeholder.classList.add('hidden');
-        applyTransportDefaults(el.getAttribute('data-transport'));
-        closeDropdown();
-      }
-
-      function applyTransportDefaults(transport) {
-        var radio = document.querySelector('input[name="transport"][value="' + transport + '"]');
-        if (!radio) return;
-        radio.checked = true;
-        document.getElementById('port').value = transport === 'telnet' ? '23' : '22';
-      }
-
-      function closeDropdown() {
-        dropdown.classList.remove('open');
-        trigger.classList.remove('open');
-        trigger.setAttribute('aria-expanded', 'false');
-      }
-
-      function openDropdown() {
-        dropdown.classList.add('open');
-        trigger.classList.add('open');
-        trigger.setAttribute('aria-expanded', 'true');
-        search.value = '';
-        search.focus();
-        filterOptions('');
-      }
-
-      trigger.addEventListener('click', function(e) {
-        e.stopPropagation();
-        if (dropdown.classList.contains('open')) {
-          closeDropdown();
-        } else {
-          openDropdown();
-        }
-      });
-
-      search.addEventListener('input', function() {
-        filterOptions(this.value);
-      });
-
-      options.addEventListener('click', function(e) {
-        var opt = e.target.closest('.model-option');
-        if (opt) selectOption(opt);
-      });
-
-      document.addEventListener('click', function(e) {
-        var el = document.getElementById('model-select');
-        if (el && !el.contains(e.target)) {
-          closeDropdown();
-        }
-      });
-
-      trigger.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          trigger.click();
-        }
-        if (e.key === 'Escape') closeDropdown();
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          openDropdown();
-        }
-      });
-
-      window.setModel = function(modelName, setDefaults) {
-        var opts = document.querySelectorAll('#model-options .model-option');
-        for (var i = 0; i < opts.length; i++) {
-          if (opts[i].getAttribute('data-value') === modelName) {
-            if (setDefaults === false) {
-              valueInput.value = opts[i].getAttribute('data-value');
-              display.textContent = opts[i].textContent;
-              placeholder.classList.add('hidden');
-            } else {
-              selectOption(opts[i]);
-            }
-            return;
-          }
-        }
-      };
-
-      document.querySelectorAll('input[name="auth_method"]').forEach(function(radio) {
-        radio.addEventListener('change', function() {
-          var usingKey = this.value === 'key' && this.checked;
-          document.getElementById('password-field').hidden = usingKey;
-          document.getElementById('private-key-field').hidden = !usingKey;
-          document.getElementById('password').required = !usingKey;
-          document.getElementById('private-key').required = usingKey;
-        });
-      });
-    });
-  </script>
   <div id="app-root">
     <div class="connect-screen">
       <div class="connect-panel">
         <div class="connect-header">
           <img src="/img/logo_blue.png" alt="Router UI" class="app-logo-img">
-          <span class="section-label">ver 0.0.1</span>
+          <span class="section-label">ver {{version}}</span>
         </div>
         <form hx-post="/api/connect"
               hx-target="#app-root"
@@ -143,7 +40,7 @@
           <div class="form-row">
             <div class="form-field flex-1">
               <label for="port">ポート</label>
-              <input type="number" id="port" name="port" class="form-input" value="22">
+              <input type="number" id="port" name="port" class="form-input" value="22" min="1" max="65535" required>
             </div>
             <div class="form-field flex-1">
               <label>プロトコル</label>
@@ -177,7 +74,8 @@
             <span class="field-label">機種</span>
             <div class="model-select" id="model-select">
               <div class="model-select-trigger" id="model-trigger" tabindex="0" role="combobox"
-                aria-haspopup="listbox" aria-controls="model-options" aria-expanded="false">
+                aria-haspopup="listbox" aria-controls="model-options" aria-expanded="false"
+                aria-label="機種を選択">
                 <span class="model-select-placeholder" id="model-placeholder">機種を選択...</span>
                 <span class="model-select-value" id="model-display"></span>
                 <span class="model-select-arrow">&#x25BC;</span>
@@ -186,7 +84,7 @@
               <div class="model-dropdown" id="model-dropdown">
                 <div class="model-search-wrap">
                   <input type="text" class="model-search-input" id="model-search"
-                    placeholder="検索..." autocomplete="off">
+                    placeholder="機種を検索..." autocomplete="off" aria-label="機種を検索">
                 </div>
                 <div class="model-options" id="model-options" role="listbox">
                   {{modelOptions}}
@@ -198,6 +96,10 @@
         </form>
         <div class="saved-connections"
           hx-get="/api/saved-connections"
+          hx-trigger="load"
+          hx-swap="innerHTML"></div>
+        <div class="known-hosts"
+          hx-get="/api/known-hosts"
           hx-trigger="load"
           hx-swap="innerHTML"></div>
       </div>

@@ -150,13 +150,16 @@ export interface TransportOptions {
     username: string;
     password?: string;
     privateKey?: string;
+    hostKeyVerifier?: (key: Buffer) => boolean;
 }
 
 export interface DeviceConnection {
+    ownerSessionId: string;
     model: string;
     host: string;
     port: number;
     changeToken: string;
+    lastActivityAt: number;
     transport: Transport;
     config: ResolvedConfig;
 }

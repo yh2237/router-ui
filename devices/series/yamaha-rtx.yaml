@@ -14,6 +14,12 @@ commands:
     cmd: "show status boot 0"
     parse: "yamaha_status"
     category: "system"
+  show_status_packet_buffer:
+    label: "パケットバッファ状態"
+    description: "パケットバッファの割り当て状況と失敗回数を表示"
+    cmd: "show status packet-buffer"
+    parse: "raw"
+    category: "resource"
   show_status_lan1:
     label: "LAN1 Status"
     description: "LAN1 インターフェースの状態を取得"

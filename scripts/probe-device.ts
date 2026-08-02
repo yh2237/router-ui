@@ -43,7 +43,9 @@ function parseArgs(argv: string[]): Args {
 
 async function main(): Promise<void> {
     const args = parseArgs(process.argv.slice(2));
+    const ownerSessionId = "device-probe";
     const connId = await connect({
+        ownerSessionId,
         model: args.model,
         host: args.host,
         username: args.username,
@@ -52,7 +54,7 @@ async function main(): Promise<void> {
         port: args.port,
     });
 
-    const conn = getConnection(connId);
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) throw new Error("Failed to resolve connection");
 
     const commandKeys = args.commands && args.commands.length > 0
@@ -82,7 +84,7 @@ async function main(): Promise<void> {
 
                 const started = Date.now();
                 try {
-                    const raw = await executeCommand(connId, cmdConfig.cmd);
+                    const raw = await executeCommand(connId, ownerSessionId, cmdConfig.cmd);
                     const elapsed = Date.now() - started;
                     const output = raw.trim();
                     stat.ok += 1;
@@ -98,7 +100,7 @@ async function main(): Promise<void> {
             }
         }
     } finally {
-        await disconnect(connId);
+        await disconnect(connId, ownerSessionId);
     }
 
     console.log("\n[summary]");

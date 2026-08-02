@@ -2,11 +2,38 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     detectInterfaceStatus,
+    extractResourceMetrics,
     ifaceRowHtml,
     parsePhysicalPortStates,
     parseTrafficCounters,
+    renderDashboardCards,
     renderInterfaceOverview,
 } from "./dashboard.js";
+
+test("dashboard cards load independently instead of inheriting the tab request lock", () => {
+    const html = renderDashboardCards("connection-id");
+    const cardBodies = html.match(/class="dashboard-card-body"[\s\S]*?<\/div>/g) ?? [];
+
+    assert.equal(cardBodies.length, 5);
+    for (const body of cardBodies) {
+        assert.match(body, /hx-trigger="(?:load|load, every 5s)"/);
+        assert.match(body, /hx-sync="this:replace"/);
+    }
+    assert.equal((html.match(/hx-trigger="load, every 5s"/g) ?? []).length, 2);
+    assert.doesNotMatch(html, /秒ごとに自動更新/);
+});
+
+test("extracts CPU, memory, and packet-buffer usage from Yamaha environment output", () => {
+    const metrics = extractResourceMetrics({
+        "CPU の使用量 (5秒平均)": "7％",
+        "メモリの使用量": "42% used",
+        "パケットバッファの使用量": "3%",
+    });
+
+    assert.equal(metrics.cpuPercent, 7);
+    assert.equal(metrics.memoryPercent, 42);
+    assert.equal(metrics.packetBufferPercent, 3);
+});
 
 test("parses RTX LAN octet counters", () => {
     const result = parseTrafficCounters([

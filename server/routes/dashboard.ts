@@ -1,15 +1,16 @@
 import { Hono } from "hono";
-import { executeCommand, getConnection } from "../lib/connection.js";
+import { executeCommand, getConnection, registerConnectionCleanup } from "../lib/connection.js";
 import { parseOutput, type ParsedResult } from "../lib/parsers.js";
 import { renderDevicePanel, type PanelRuntimeState } from "../lib/device-panel.js";
 import type { ResolvedConfig } from "../lib/types.js";
+import { getBrowserSession } from "../lib/auth.js";
 
 const dashboard = new Hono();
 
-const CARD_DEFS: { key: string; label: string }[] = [
+const CARD_DEFS: { key: string; label: string; refreshSeconds?: number }[] = [
     { key: "system", label: "システム情報" },
-    { key: "resource", label: "リソース情報" },
-    { key: "traffic", label: "トラフィック情報" },
+    { key: "resource", label: "リソース情報", refreshSeconds: 5 },
+    { key: "traffic", label: "トラフィック情報", refreshSeconds: 5 },
     { key: "interface", label: "インターフェース情報" },
     { key: "routing", label: "ルーティング情報" },
 ];
@@ -21,50 +22,62 @@ interface TrafficSample {
 }
 
 const trafficHistory = new Map<string, TrafficSample[]>();
+const commandCache = new Map<string, { expiresAt: number; promise: Promise<ParsedResult> }>();
+registerConnectionCleanup((id) => {
+    trafficHistory.delete(id);
+    for (const key of commandCache.keys()) {
+        if (key.startsWith(`${id}:`)) commandCache.delete(key);
+    }
+});
 
 dashboard.get("/api/device/:connId/dashboard", async (c) => {
     const connId = c.req.param("connId");
-    const conn = getConnection(connId);
+    const conn = getConnection(connId, getBrowserSession(c).id);
     if (!conn) return c.html(`<div class="error-message">Device not connected</div>`, 404);
 
+    return c.html(renderDashboardCards(connId));
+});
+
+export function renderDashboardCards(connId: string): string {
     const cards = CARD_DEFS
         .map((def) => `
             <div class="dashboard-card dashboard-card--${def.key}">
                 <div class="dashboard-card-header">
                     <h3>${def.label}</h3>
                     <span id="dash-spin-${def.key}" class="spinner htmx-indicator"></span>
-                    <button class="btn-refresh" aria-label="${def.label}を更新" hx-post="/api/device/${connId}/dashboard/card/${def.key}" hx-target="#dash-body-${def.key}" hx-indicator="#dash-spin-${def.key}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5.3M20 4v7h-7"/></svg></button>
+                    <button class="btn-refresh" aria-label="${def.label}を更新" hx-post="/api/device/${connId}/dashboard/card/${def.key}" hx-target="#dash-body-${def.key}" hx-sync="#dash-body-${def.key}:replace" hx-indicator="#dash-spin-${def.key}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5.3M20 4v7h-7"/></svg></button>
                 </div>
                 <div class="dashboard-card-body" id="dash-body-${def.key}"
                     hx-post="/api/device/${connId}/dashboard/card/${def.key}"
-                    hx-trigger="${def.key === "traffic" ? "load, every 5s" : "load"}" hx-target="this" hx-indicator="#dash-spin-${def.key}">
+                    hx-trigger="${def.refreshSeconds ? `load, every ${def.refreshSeconds}s` : "load"}" hx-target="this" hx-sync="this:replace" hx-indicator="#dash-spin-${def.key}">
                     <div class="dash-loading">読み込み中...</div>
                 </div>
             </div>
         `)
         .join("");
 
-    return c.html(`<div class="dashboard-grid">${cards}</div>`);
-});
+    return `<div class="dashboard-grid">${cards}</div>`;
+}
 
 dashboard.post("/api/device/:connId/dashboard/card/:category", async (c) => {
     const connId = c.req.param("connId");
     const category = c.req.param("category");
-    const conn = getConnection(connId);
+    const ownerSessionId = getBrowserSession(c).id;
+    const conn = getConnection(connId, ownerSessionId);
     if (!conn) return c.html(`<div class="error-message">Device not connected</div>`);
 
     try {
         switch (category) {
             case "system":
-                return await renderSystemCard(conn.config, connId);
+                return await renderSystemCard(conn.config, connId, ownerSessionId);
             case "interface":
-                return await renderInterfaceCard(conn.config, connId);
+                return await renderInterfaceCard(conn.config, connId, ownerSessionId);
             case "routing":
-                return await renderRoutingCard(conn.config, connId);
+                return await renderRoutingCard(conn.config, connId, ownerSessionId);
             case "resource":
-                return await renderResourceCard(conn.config, connId);
+                return await renderResourceCard(conn.config, connId, ownerSessionId);
             case "traffic":
-                return await renderTrafficCard(conn.config, connId);
+                return await renderTrafficCard(conn.config, connId, ownerSessionId);
             default:
                 return c.html(`<div class="error-message">不明なカテゴリです</div>`);
         }
@@ -75,47 +88,134 @@ dashboard.post("/api/device/:connId/dashboard/card/:category", async (c) => {
     }
 });
 
-async function execAndCache(config: ResolvedConfig, connId: string, cmdKey: string): Promise<ParsedResult> {
+async function execAndCache(
+    config: ResolvedConfig,
+    connId: string,
+    ownerSessionId: string,
+    cmdKey: string,
+): Promise<ParsedResult> {
     const cmdConfig = config.commands[cmdKey];
     if (!cmdConfig) throw new Error(`Unknown command: ${cmdKey}`);
-    const raw = await executeCommand(connId, cmdConfig.cmd);
-    return parseOutput(raw, cmdConfig.parse);
+    const cacheKey = `${connId}:${cmdKey}`;
+    const existing = commandCache.get(cacheKey);
+    if (existing && existing.expiresAt > Date.now()) return existing.promise;
+
+    const entry = {
+        expiresAt: Number.POSITIVE_INFINITY,
+        promise: executeCommand(connId, ownerSessionId, cmdConfig.cmd)
+            .then((raw) => parseOutput(raw, cmdConfig.parse)),
+    };
+    commandCache.set(cacheKey, entry);
+    entry.promise.then(
+        () => {
+            if (commandCache.get(cacheKey) === entry) entry.expiresAt = Date.now() + 1_000;
+        },
+        () => {
+            if (commandCache.get(cacheKey) === entry) commandCache.delete(cacheKey);
+        },
+    );
+    return entry.promise;
 }
 
-async function renderSystemCard(config: ResolvedConfig, connId: string): Promise<Response> {
-    const sysCmds = Object.entries(config.commands).filter(([, cmd]) => cmd.category === "system");
-    if (sysCmds.length === 0) return noDataHtml();
-
-    for (const [cmdKey] of sysCmds) {
-        try {
-            const parsed = await execAndCache(config, connId, cmdKey);
-            if (parsed.type === "keyvalue" && parsed.data && Object.keys(parsed.data).length > 0) {
-                const d = parsed.data;
-                const rows = [
-                    { label: "モデル", value: pick(d, ["Model", "モデル", "機種", "Product Name", "Machine", "Product"]) },
-                    { label: "シリアルNo.", value: pick(d, ["Serial Number", "Serial No.", "シリアル番号", "Serial", "S/N"]) },
-                    { label: "ファームウェア", value: pick(d, ["Firmware Revision", "Rev", "Firmware version", "Firmware Rev.", "F/W Rev", "Firmware", "システムのリビジョン"]) },
-                    { label: "MACアドレス", value: pick(d, ["MAC Address", "MACアドレス", "MAC"]) },
-                    { label: "稼働時間", value: pick(d, ["Uptime", "起動時間", "Up Time", "Uptime", "System up time"]) },
-                    { label: "CPU", value: pick(d, ["CPU", "CPU Load", "CPU使用率", "CPU load", "CPU utilization", "CPU の使用量"]) },
-                    { label: "メモリ", value: pick(d, ["Memory", "メモリ", "Memory Usage", "Memory utilization", "Mem", "メモリの使用量"]) },
-                ];
-                const items = rows
-                    .filter((r): r is { label: string; value: string } => !!r.value)
-                    .map((r) => `<div class="kv-row"><span class="kv-key">${r.label}</span><span class="kv-val">${escapeHtml(r.value)}</span></div>`)
-                    .join("");
-                if (items) return cHtml(`<div class="dash-system-info">${items}</div>`);
-            }
-            return cHtml(`<pre class="terminal-dash">${escapeHtml(parsed.raw)}</pre>`);
-        } catch {
-            // try next fallback command
-        }
+async function renderSystemCard(config: ResolvedConfig, connId: string, ownerSessionId: string): Promise<Response> {
+    const environment = await tryDashboardCommand(config, connId, ownerSessionId, "show_system");
+    const boot = await tryDashboardCommand(config, connId, ownerSessionId, "show_status_boot");
+    const lanStates = await Promise.all(
+        ["show_status_lan1", "show_status_lan2", "show_status_lan3"]
+            .map((key) => tryDashboardCommand(config, connId, ownerSessionId, key)),
+    );
+    if (!environment && !boot && lanStates.every((state) => !state)) {
+        return noDataHtml("システム情報を取得できませんでした");
     }
 
-    return noDataHtml("システム情報を取得できませんでした");
+    const environmentData = environment?.data ?? {};
+    const bootData = boot?.data ?? {};
+    const rows = [
+        {
+            label: "ファームウェアRev",
+            value: pick(environmentData, ["システムのリビジョン", "Firmware Revision", "Revision"])
+                ?? extractFirmwareRevision(environment?.raw),
+        },
+        {
+            label: "シリアルNo.",
+            value: pick(environmentData, ["シリアル番号", "Serial Number", "Serial"])
+                ?? extractSerialNumber(environment?.raw),
+        },
+        ...lanStates.map((state, index) => ({
+            label: `LAN${index + 1} MACアドレス`,
+            value: extractMacAddress(state),
+        })),
+        {
+            label: "ファームウェア",
+            value: pick(environmentData, [
+                "動作しているファームウェア", "実行中のファームウェア", "Firmware",
+            ]),
+        },
+        {
+            label: "シリアルボーレート",
+            value: pick(environmentData, [
+                "シリアルポートのボーレート", "シリアルボーレート", "Serial Baud Rate", "Baud Rate",
+            ]),
+        },
+        {
+            label: "システム時刻",
+            value: pick(environmentData, ["システム時刻", "現在時刻", "Current Time", "System Time"]),
+        },
+        {
+            label: "起動時刻",
+            value: pick(environmentData, ["起動時刻", "起動日時", "Boot Time"])
+                ?? pick(bootData, ["起動時刻", "起動日時", "Boot Time"]),
+        },
+        {
+            label: "起動理由",
+            value: pick(bootData, ["起動理由", "起動要因", "Boot Reason", "Boot Cause", "Cause"]),
+        },
+    ];
+    const items = rows
+        .map(({ label, value }) => `
+            <div class="kv-row">
+                <span class="kv-key">${label}</span>
+                <span class="kv-val${value ? "" : " kv-val--unavailable"}">${value ? escapeHtml(value) : "取得できません"}</span>
+            </div>
+        `)
+        .join("");
+    return cHtml(`<div class="dash-system-info">${items}</div>`);
 }
 
-async function renderInterfaceCard(config: ResolvedConfig, connId: string): Promise<Response> {
+async function tryDashboardCommand(
+    config: ResolvedConfig,
+    connId: string,
+    ownerSessionId: string,
+    commandKey: string,
+): Promise<ParsedResult | undefined> {
+    if (!config.commands[commandKey]) return undefined;
+    try {
+        return await execAndCache(config, connId, ownerSessionId, commandKey);
+    } catch {
+        return undefined;
+    }
+}
+
+function extractFirmwareRevision(raw: string | undefined): string | undefined {
+    return raw?.match(/\bRev\.[0-9.]+/i)?.[0];
+}
+
+function extractSerialNumber(raw: string | undefined): string | undefined {
+    return raw?.match(/\bserial\s*=\s*([^\s,]+)/i)?.[1];
+}
+
+function extractMacAddress(parsed: ParsedResult | undefined): string | undefined {
+    if (!parsed) return undefined;
+    const fromData = parsed.data
+        ? pick(parsed.data, [
+            "MAC Address", "MACアドレス", "Ethernet Address", "イーサネットアドレス", "物理アドレス",
+        ])
+        : undefined;
+    const source = fromData ?? parsed.raw;
+    return source.match(/\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b/i)?.[0];
+}
+
+async function renderInterfaceCard(config: ResolvedConfig, connId: string, ownerSessionId: string): Promise<Response> {
     const ifaceCmds = Object.entries(config.commands).filter(([, cmd]) => cmd.category === "interface");
     if (ifaceCmds.length === 0) return noDataHtml();
 
@@ -125,7 +225,7 @@ async function renderInterfaceCard(config: ResolvedConfig, connId: string): Prom
     };
     for (const [key] of ifaceCmds) {
         try {
-            const parsed = await execAndCache(config, connId, key);
+            const parsed = await execAndCache(config, connId, ownerSessionId, key);
             const sourceName = key.replace(/^show_status_?/, "").toLowerCase();
 
             if (parsed.type === "table" && parsed.rows && parsed.rows.length > 0) {
@@ -177,11 +277,11 @@ async function renderInterfaceCard(config: ResolvedConfig, connId: string): Prom
     return cHtml(renderInterfaceOverview(panel, items));
 }
 
-async function renderRoutingCard(config: ResolvedConfig, connId: string): Promise<Response> {
+async function renderRoutingCard(config: ResolvedConfig, connId: string, ownerSessionId: string): Promise<Response> {
     const cmdEntry = Object.entries(config.commands).find(([, cmd]) => cmd.category === "routing");
     if (!cmdEntry) return noDataHtml();
 
-    const parsed = await execAndCache(config, connId, cmdEntry[0]);
+    const parsed = await execAndCache(config, connId, ownerSessionId, cmdEntry[0]);
 
     if (parsed.type === "table" && parsed.columns && parsed.rows) {
         const thead = `<thead><tr>${parsed.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
@@ -203,19 +303,19 @@ async function renderRoutingCard(config: ResolvedConfig, connId: string): Promis
     return cHtml(`<pre class="terminal-dash">${escapeHtml(parsed.raw)}</pre>`);
 }
 
-async function renderResourceCard(config: ResolvedConfig, connId: string): Promise<Response> {
+async function renderResourceCard(config: ResolvedConfig, connId: string, ownerSessionId: string): Promise<Response> {
     const systemCmd = Object.entries(config.commands).find(([, cmd]) => cmd.category === "system");
 
     let d: Record<string, string> | null = null;
 
     if (systemCmd) {
         try {
-            const parsed = await execAndCache(config, connId, systemCmd[0]);
+            const parsed = await execAndCache(config, connId, ownerSessionId, systemCmd[0]);
             if (parsed.type === "keyvalue" && parsed.data && Object.keys(parsed.data).length > 0) {
                 d = parsed.data;
             }
         } catch {
-            // おおなとき
+            // Try the model-specific resource command below.
         }
     }
 
@@ -223,7 +323,7 @@ async function renderResourceCard(config: ResolvedConfig, connId: string): Promi
         const resourceCmd = Object.entries(config.commands).find(([, cmd]) => cmd.category === "resource");
         if (!resourceCmd) return noDataHtml("リソース情報はこの機種では利用できません");
         try {
-            const parsed = await execAndCache(config, connId, resourceCmd[0]);
+            const parsed = await execAndCache(config, connId, ownerSessionId, resourceCmd[0]);
             if (parsed.type !== "keyvalue" || !parsed.data) {
                 return cHtml(`<pre class="terminal-dash">${escapeHtml(parsed.raw)}</pre>`);
             }
@@ -235,59 +335,89 @@ async function renderResourceCard(config: ResolvedConfig, connId: string): Promi
 
     if (!d) return noDataHtml("リソース情報はこの機種では利用できません");
 
-    const cpuRaw = pick(d, ["CPU", "CPU Load", "CPU使用率", "CPU load", "CPU utilization", "CPU の使用量", "cpu"]);
-    const memRaw = pick(d, ["Memory", "メモリ", "Memory Usage", "Memory utilization", "Mem", "メモリの使用量", "memory"]);
-
-    const cpuPercent = extractPercent(cpuRaw);
-    const memPercent = extractPercent(memRaw);
-
-    const items: string[] = [];
-
-    if (cpuPercent !== null) {
-        items.push(`
-            <div class="meter-row">
-                <span class="meter-label">CPU</span>
-                <span class="meter-value">${cpuPercent}%</span>
-                <div class="meter-bar"><div class="meter-fill" style="width:${cpuPercent}%"></div></div>
-            </div>
-        `);
-    } else if (cpuRaw) {
-        items.push(`
-            <div class="kv-row"><span class="kv-key">CPU</span><span class="kv-val">${escapeHtml(cpuRaw!)}</span></div>
-        `);
+    const metrics = extractResourceMetrics(d);
+    const items = [
+        renderResourceMetric("CPU", metrics.cpuRaw, metrics.cpuPercent),
+        renderResourceMetric("メモリ", metrics.memoryRaw, metrics.memoryPercent),
+    ];
+    if (metrics.packetBufferRaw) {
+        items.push(renderResourceMetric(
+            "パケットバッファ",
+            metrics.packetBufferRaw,
+            metrics.packetBufferPercent,
+        ));
     }
 
-    if (memPercent !== null) {
-        items.push(`
-            <div class="meter-row">
-                <span class="meter-label">メモリ</span>
-                <span class="meter-value">${memPercent}%</span>
-                <div class="meter-bar"><div class="meter-fill" style="width:${memPercent}%"></div></div>
-            </div>
-        `);
-    } else if (memRaw) {
-        items.push(`
-            <div class="kv-row"><span class="kv-key">メモリ</span><span class="kv-val">${escapeHtml(memRaw!)}</span></div>
-        `);
-    }
-
-    if (items.length > 0) {
-        return cHtml(`<div class="dash-resource">${items.join("")}</div>`);
-    }
-
-    const uptime = pick(d, ["Uptime", "起動時間", "Up Time", "System up time"]);
-    if (uptime) {
-        return cHtml(`<div class="kv-row"><span class="kv-key">稼働時間</span><span class="kv-val">${escapeHtml(uptime)}</span></div>`);
-    }
-
-    return noDataHtml("リソース情報はこの機種では利用できません");
+    return cHtml(`
+        <div class="dash-resource">
+            ${items.join("")}
+            <p class="dashboard-updated-at">最終更新 ${formatUpdateTime(new Date())}</p>
+        </div>
+    `);
 }
 
-async function renderTrafficCard(config: ResolvedConfig, connId: string): Promise<Response> {
+export interface ResourceMetrics {
+    cpuRaw?: string;
+    cpuPercent: number | null;
+    memoryRaw?: string;
+    memoryPercent: number | null;
+    packetBufferRaw?: string;
+    packetBufferPercent: number | null;
+}
+
+export function extractResourceMetrics(data: Record<string, string>): ResourceMetrics {
+    const cpuRaw = pick(data, [
+        "CPU", "CPU Load", "CPU使用率", "CPU load", "CPU utilization", "CPU の使用量", "cpu",
+    ]);
+    const memoryRaw = pick(data, [
+        "Memory", "メモリ", "Memory Usage", "Memory utilization", "Mem", "メモリの使用量", "memory",
+    ]);
+    const packetBufferRaw = pick(data, [
+        "パケットバッファの使用量", "パケットバッファ使用量", "Packet Buffer Usage", "Packet Buffer",
+    ]);
+    return {
+        cpuRaw,
+        cpuPercent: extractPercent(cpuRaw),
+        memoryRaw,
+        memoryPercent: extractPercent(memoryRaw),
+        packetBufferRaw,
+        packetBufferPercent: extractPercent(packetBufferRaw),
+    };
+}
+
+function renderResourceMetric(label: string, raw: string | undefined, percent: number | null): string {
+    if (percent !== null) {
+        return `
+            <div class="meter-row">
+                <span class="meter-label">${escapeHtml(label)}</span>
+                <span class="meter-value">${percent}%</span>
+                ${renderPercentMeter(percent, `${label}使用率`)}
+            </div>
+        `;
+    }
+    return `
+        <div class="meter-row meter-row--unavailable">
+            <span class="meter-label">${escapeHtml(label)}</span>
+            <span class="meter-value">${raw ? escapeHtml(raw) : "取得できません"}</span>
+        </div>
+    `;
+}
+
+function renderPercentMeter(value: number, label: string): string {
+    return `
+        <svg class="meter-bar" viewBox="0 0 100 10" preserveAspectRatio="none"
+            role="img" aria-label="${escapeHtml(label)} ${value}%">
+            <rect class="meter-track" x="0" y="0" width="100" height="10"></rect>
+            <rect class="meter-fill" x="0" y="0" width="${value}" height="10"></rect>
+        </svg>
+    `;
+}
+
+async function renderTrafficCard(config: ResolvedConfig, connId: string, ownerSessionId: string): Promise<Response> {
     const command = config.commands.show_status_lan1;
     if (!command) return noDataHtml("トラフィック情報はこの機種では利用できません");
 
-    const raw = await executeCommand(connId, command.cmd);
+    const raw = await executeCommand(connId, ownerSessionId, command.cmd);
     const counters = parseTrafficCounters(raw);
     if (!counters) return noDataHtml("LAN1の送受信カウンタを取得できませんでした");
 
@@ -355,18 +485,39 @@ function noDataHtml(msg = "データがありません"): Response {
 }
 
 function pick(d: Record<string, string>, keys: string[]): string | undefined {
-    for (const k of keys) {
-        const lower = k.toLowerCase();
-        const found = Object.keys(d).find((dk) => dk.toLowerCase() === lower);
-        if (found) return d[found];
+    const entries = Object.entries(d);
+    for (const key of keys) {
+        const normalized = normalizeLabel(key);
+        const found = entries.find(([candidate]) => normalizeLabel(candidate) === normalized);
+        if (found) return found[1];
+    }
+    for (const key of keys) {
+        const normalized = normalizeLabel(key);
+        if (normalized.length < 3) continue;
+        const found = entries.find(([candidate]) => normalizeLabel(candidate).includes(normalized));
+        if (found) return found[1];
     }
     return undefined;
 }
 
 function extractPercent(raw: string | undefined): number | null {
     if (!raw) return null;
-    const m = raw.match(/(\d+)\s*%/);
-    return m ? parseInt(m[1], 10) : null;
+    const match = raw.match(/(\d+(?:\.\d+)?)\s*[%％]/);
+    if (!match) return null;
+    return Math.min(100, Math.max(0, Number(match[1])));
+}
+
+function normalizeLabel(value: string): string {
+    return value.normalize("NFKC").toLowerCase().replace(/[\s_.:/()［\]【】-]+/g, "");
+}
+
+function formatUpdateTime(date: Date): string {
+    return new Intl.DateTimeFormat("ja-JP", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+    }).format(date);
 }
 
 function escapeHtml(s: string): string {
